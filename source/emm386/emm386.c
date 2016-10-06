@@ -30,13 +30,28 @@
 
 */
 
+#if defined(NEC98)
+#define PROGRAM "EMM386(98)"
+#else
 #define PROGRAM "EMM386"
+#endif
 
 #include "useful.h"
 
 #define VDS
 
+#if 1
+#define PLINE { printf("line %u", (unsigned)__LINE__); _asm { mov ah,0 }; _asm { int 18h }; printf("\n"); }
+#endif
 /******************** globals in EMM386.ASM **************************************/
+#if defined(NEC98)
+# define DEFAULT_FRAME 0 /* 0xc000U */
+#elif defined(IBMPC)
+# define DEFAULT_FRAME 0xe000U
+#else
+	/* don't care other platforms... */
+#endif
+
 #define DMA_BUFFER_SIZE 64
 #define MAXK_EMS_ALLOWED (512L*1024L-32L)
 #define	UMB_MAX_BLOCKS	8
@@ -104,13 +119,17 @@ int VMwareDetect(void);
 /********************** local globals   ***************************************/
 
 /* int FlagNOEMS = FALSE;					/ * should be set from commandline */
-ushort FlagFRAMEwanted = 0xe000;		/* should be set from commandline */
+ushort FlagFRAMEwanted = DEFAULT_FRAME;		/* should be set from commandline */
 /* ushort FlagEMSwanted   = 8*1024;		/ * wanted EMM memory         */
 unsigned long FlagEMSwanted = 0L;	/* with pool-sharing, no longer a default EMS size */
 
 
 
+#if defined(NEC98)
+char VDS_enabled = 0;					/* only if explicitly enabled */
+#else
 char VDS_enabled = 1;					/* only if explicitly enabled */
+#endif
 char MemoryRequest = 0;					/* only set if EMM= memory request */
 
 
@@ -161,11 +180,65 @@ void SetMemoryType(ushort addr, uchar type)
 	builds SystemMemory map
 */	
 
+#if defined(NEC98)
+static uchar CheckROM(ushort addr)
+{
+	uchar type = SystemMemory[addr >> 8];
+	ushort offset = 0;
+	uchar romval = 0;
+
+	if (type != 'U')
+		return type;
+	/* check ROM roughly */
+	/* (test only least 16bytes in 4K region) */
+	for(; offset < 16; ++offset)
+		{
+			uchar b = *(uchar far *)MK_FP(addr, offset);
+			if (b != 0xff) romval |= b;
+		}
+	if (romval != 0)
+		type = 'E';
+	return type;
+}
+
+
+void ScanSystemMemory(void)
+{
+	uint mem;
+
+
+	for (mem = 0; mem < 0xa000U; mem++) /* system memory - reserved */
+		SetMemoryType(mem,'R');
+
+	for (mem = 0xa000; mem <= 0xa4ff; mem++) 	/* text */
+		SetMemoryType(mem,'G');
+	for (mem = 0xb000; mem <= 0xbfff; mem++) 	/* graphics */
+		SetMemoryType(mem,'G');
+	for (mem = 0xe000; mem <= 0xe7ff; mem++) 	/* graphic */
+		SetMemoryType(mem,'G');
+
+	for (mem = 0xe800; ; mem++)			/* system ROM */
+		{
+		SetMemoryType(mem,'E');
+		if (mem == 0xffff) break;
+		}
+
+	for(mem = 0xc000; mem < 0xe800; mem += 0x100)
+		{
+			uchar type = CheckROM(mem);
+			ushort romrgn;
+			if (type == 'E')
+				for(romrgn = 0; romrgn < (4096/16); romrgn++)
+					SetMemoryType(mem + romrgn, type);
+		}
+}
+/* end NEC98 */
+#elif defined(IBMPC)
 void ScanSystemMemory(void)
 {
 	uint mem,i;
 	uchar far * pmem;
-	uchar reuse;
+		uchar reuse;
 
 	
 	for (mem = 0; mem < 0xa000; mem++) /* system memory - reserved */
@@ -179,6 +252,7 @@ void ScanSystemMemory(void)
 
 
 /* feel free to optimize graphics memory */
+
 
 	for (mem = 0xa000; mem <= 0xaFFF; mem++) 	/* VGA graphics */
 		SetMemoryType(mem,'G');
@@ -290,6 +364,7 @@ void ScanSystemMemory(void)
 	/* for (i = 0xa0; i < 0xf8; i++)
 			printf("%x00 : %c\n",i,SystemMemory[i]); */
 }
+#endif /* end IBMPC */
 
 /* 
 	find a contiguous area of 64 KB 
@@ -314,7 +389,11 @@ ushort LocatePageFrame(void)
 
 		for (i = 0; i < 16; i++)
 			{
+#if defined(DEFAULT_FRAME) && (DEFAULT_FRAME == 0)
+			if (SystemMemory[base+i] != 'U' && SystemMemory[base+i] != 'X' && SystemMemory[base+i] != 'I')
+#else
 			if (SystemMemory[base+i] != 'U')
+#endif
 				break;
 			}
 		if (i == 16)
@@ -342,7 +421,12 @@ ushort LocatePageFrame(void)
 	if (frame == 0)
 		{
 /*		printf("no suitable page frame found, which we can't handle\n");	*/
+#if defined(NEC98)
+		printf("no suitable page frame found.  EMS functions disabled.\n");
+		FlagNOEMS = TRUE;
+#else
 		printf("no suitable page frame found.  EMS functions limited.\n");
+#endif
 		NoPageFrame = TRUE;
 		return 0;
 		}
@@ -381,11 +465,15 @@ int isUMBMemory(ushort base)
 	return value is in 4K pages
 	does not count mapping at FF00
 */
-UMBpageswanted(void)
+int UMBpageswanted(void)
 {
 	int i,wanted = 0;
 /*	for (wanted = 0, i = 0xa0; i < 0xf0; i+=4)	*/
+#if defined(NEC98)
+	for (wanted = 0, i = 0xa0; i < 0xfd; i++)
+#else
 	for (wanted = 0, i = 0xa0; i < 0xf8; i++)
+#endif
 		if (isUMBMemory(i))
 			{
 			wanted++;
@@ -407,11 +495,12 @@ ushort xmsax,xmsbx,xmscx,xmsdx;
 /* removed superfluous register loads */
 int xmscall(uint function)
 {
+#if defined(__TURBOC__)
 	asm mov dx,xmsdx
 /*	asm mov cx,xmscx	*/
 	asm mov bx,xmsbx
 /*	asm mov ax,xmsax	*/
-	asm mov ah,function
+	asm mov ah,byte ptr [function]
 
 	XMSdriverAdress();
 
@@ -419,6 +508,17 @@ int xmscall(uint function)
 /*	asm mov xmscx,cx	*/
 	asm mov xmsbx,bx
 	asm mov xmsax,ax
+#else
+	_asm {
+		mov dx, word ptr [xmsdx]
+		mov bx, word ptr [xmsbx]
+		mov ah, byte ptr [function]
+		call dword ptr [XMSdriverAdress]
+		mov [xmsdx], dx
+		mov [xmsbx], bx
+		mov [xmsax], ax
+	}
+#endif
 
 	return xmsax;
 }      
@@ -428,11 +528,12 @@ struct streg32 reg32;
 /* various machinations required since TCC doesn't support 32-bit inline asm */
 int xmscall32(uint function)
 {
+#if defined(__TURBOC__)
 	asm db 0x66
 	asm mov dx,reg32.edx_low
 	asm db 0x66
 	asm mov bx,reg32.ebx_low
-	asm mov ah,function
+	asm mov ah,byte ptr [function]
 
 	XMSdriverAdress();
 
@@ -444,12 +545,32 @@ int xmscall32(uint function)
 	asm mov	reg32.ebx_low,bx
 	asm	db 0x66
 	asm mov	reg32.eax_low,ax
+#else
+	_asm {
+		db 0x66
+		mov dx,word ptr [reg32 + 12]
+		db 0x66
+		mov bx,word ptr [reg32 + 4]
+		mov ah,byte ptr [function]
+		call dword ptr [XMSdriverAdress]
+		db 0x66
+		mov word ptr [reg32 + 12],dx
+		db 0x66
+		mov word ptr [reg32 + 8],cx
+		db 0x66
+		mov word ptr [reg32 + 4],bx
+		db 0x66
+		mov word ptr [reg32],ax
+	}
+#endif
 
 	return reg32.eax_low;
 }
 
 int VMwareDetect()
 {
+#if defiend(IBMPC)
+# if defined(__TURBOC__)
 	asm	db 0x66			/* mov eax,564d5856h */
 	asm	mov ax,0x5868
 	asm	dw 0x564d
@@ -471,6 +592,34 @@ int VMwareDetect()
 
 failed:
 	return 0;
+# else
+	int result = 0;
+	_asm {
+		db 0x66			/* mov eax,564d5856h */
+		mov ax,0x5868
+		dw 0x564d
+		db 0x66			/* mov ecx,0ah */
+		mov cx,0x0a
+		dw 0x0000
+		db 0x66			/* mov ebx,ecx */
+		mov bx,cx
+		db 0x66			/* mov edx,5658h */
+		mov dx,0x5658
+		dw 0x0000
+		db 0x66			/* in eax,edx */
+		in ax,dx
+		db 0x66			/* cmp ebx,564d5868h */
+		cmp bx,0x5868
+		dw 0x564d
+		jne isvmw_asmend
+		mov byte ptr [result], 1
+isvmw_asmend:
+	}
+	return result;
+# endif
+#else /* IBMPC */
+	return 0;
+#endif
 }
 
 ulong C_PtrXMShandleTable = 0;
@@ -478,6 +627,7 @@ uchar C_IsXMSTableNotFixedEMS = 1;
 
 int XMSinit(void)
 {   
+#if defined(__TURBOC__)
 	{
    asm     mov ax, 4300h;
    asm     int 2fh;                 /*  XMS installation check */
@@ -508,6 +658,31 @@ no_table:
 	} 
 
 is_table:
+#else
+    _asm {
+        xor ax, ax
+        mov word ptr [XMSdriverAdress], ax
+        mov word ptr [XMSdriverAdress + 2], ax
+        mov ax, 4300h
+        int 2fh
+        cmp al, 80h
+        jne xmsinit_asm_end
+        mov ax, 4310h
+        int 2fh
+        mov word ptr [XMSdriverAdress], bx
+        mov word ptr [XMSdriverAdress + 2], es
+        mov ax, 4309h
+        int 2fh
+        cmp al, 43h
+        je xmsinit_asm_2
+        mov byte ptr [mov C_IsXMSTableNotFixedEMS], 0
+        jmp short xmsinit_asm_end
+xmsinit_asm_2:
+        mov word ptr [C_PtrXMShandleTable], bx
+        mov word ptr [C_PtrXMShandleTable + 2], es
+xmsinit_asm_end:
+    }
+#endif
 
 	if (XMSdriverAdress == NULL)
 		return 0;
@@ -529,10 +704,11 @@ is_table:
 
 	return 1;	
 
-
+#if defined(__TURBOC__)
 not_detected:
 cant_enable:
 	return 0;
+#endif
 	
 }
 
@@ -549,13 +725,13 @@ cant_enable:
 
 */
 
+int
 XMSallocAndInitMem(unsigned long kbneeded, unsigned long kbwanted)
 {   
 	unsigned long xmslargest;
 	unsigned long xmstotal;
-	unsigned long preallocate;
 	unsigned long ulcalc;
-	ushort xmshandle, temphandle;
+	ushort xmshandle;
 	int xmsspec3 = 0;
 	int badstatus;
 /*	unsigned long reserve = 0;	*/
@@ -666,6 +842,8 @@ XMSallocAndInitMem(unsigned long kbneeded, unsigned long kbwanted)
 	/* first try to allocate from end portion of largest block */
 	if (ENDALLOC && (kbneeded + kbwanted < xmslargest))
 	{
+		unsigned long preallocate;
+		ushort temphandle;
 		preallocate = xmslargest - (kbneeded + kbwanted);
 		if (!xmsspec3)
 		{
@@ -868,7 +1046,11 @@ foundend:
 								/* now prepare UMB segments to be used later */
 	index = 0;
 /*	for (mem = 0xa0; mem < 0xf0; )	*/
+#if defined(NEC98)
+	for (mem = 0xa0; mem < 0xfd; )
+#else
 	for (mem = 0xa0; mem < 0xf8; )	/* allow umbs in f000-f7ff */
+#endif
 		if (!isUMBMemory(mem))
 /*			mem += 4;	*/
 			mem++;	/* allow 4K UMB's	*/
@@ -1149,7 +1331,7 @@ int TheRealMain(int mode, char far *commandline)
 		
 			printf("%c=%x..%x\n",memtype, rangestart,rangestop);
 			
-			if (rangestart && rangestop && rangestart<=rangestop && rangestop <= 0xffff)
+			if (rangestart && rangestop && rangestart<=rangestop /* && rangestop <= 0xffff */)
 				for ( ; rangestart < rangestop; rangestart++)
 					SetMemoryType(rangestart,memtype);
 				
@@ -1249,10 +1431,17 @@ int TheRealMain(int mode, char far *commandline)
 	ScanSystemMemory();			/* build up system memory map */
 
 
+#if 1
+	if (!FlagNOEMS && !NoPageFrame)
+		FRAME = LocatePageFrame();	/* find a contiguos area of 64 KB */	
+	if (!FlagNOEMS && !NoPageFrame)
+		{
+#else
 	if (!FlagNOEMS && !NoPageFrame)
 		{
 
 		FRAME = LocatePageFrame();	/* find a contiguos area of 64 KB */	
+#endif
 	
 		if (startup_verbose)	
 			printf("  choosen FRAME address %x\n",FRAME);
@@ -1289,7 +1478,7 @@ int TheRealMain(int mode, char far *commandline)
 		printf("  MONITOR_ADDR  %lx EMM_MEMORY_END %lx TOTAL_MEMORY  %lx\n",
 			MONITOR_ADDR,EMM_MEMORY_END, TOTAL_MEMORY);
 
-	/* InstallUMBhandler();		/* as long as we can debug it */
+	/* InstallUMBhandler(); */	/* as long as we can debug it */
 			
 			
 
@@ -1306,11 +1495,11 @@ int TheRealMain(int mode, char far *commandline)
 /* called just before we go resident
 */ 
 void MyFunnyMain(void);
+int emmcall(uint function);
  
 void far finishing_touches()
 { 
 	char far *p;
-
 
 	if (startup_verbose) 
 	{
@@ -1342,7 +1531,9 @@ void far finishing_touches()
 		}			
 
 
+#if !defined(NEC98)
 	*(ulong far *)MK_FP(0,6*4) = (ulong) &IllegalOpcodeHandler;
+#endif
 
 
 				/* now do the fun stuff */
@@ -1555,9 +1746,12 @@ void MyFunnyMain()
 				}
 		int4b_oldhandler = 	*(ulong far *)MK_FP(0,0x4b*4);
 		*(ulong far *)MK_FP(0,0x4b*4) = (ulong)&int4b_handler;
+#if defined(IBMPC)
 		*(uchar far *)MK_FP(0,0x47b)  |= 0x20;
+#endif /* IBMPC */
 		}
 #endif
+#if !defined(NEC98)
 	/* map block at F000-FFFF so we can trap jumps to FFFF:0 for rebooting */
 	/* the 0xff physical page flags EMM386 to copy over ROM image */
 	emmax = 0xff;
@@ -1567,6 +1761,7 @@ void MyFunnyMain()
 	{
 		emmerror("mapping block FF00h!");
 	}
+#endif
 
 	if (startup_verbose)	
 		printf("\n");
@@ -1653,11 +1848,17 @@ int kill_XMScall( unsigned rAX, unsigned rDX)
 {
     if (kill_xmsPtr == NULL)
         {
+            uchar xms_rc = 0;
         _asm mov ax, 4300h
         _asm int 2fh                /* XMS installation check */
 
+#if 1
+        _asm mov byte ptr [xms_rc], al
+        if (xms_rc != 0x80) goto detect_done;
+#else
         _asm cmp al, 80h
         _asm jne detect_done
+#endif
 
         _asm mov ax, 4310h               /* XMS get driver address */
         _asm int 2fh

@@ -279,7 +279,12 @@ gdt_size=$-(offset dummy)
 code16idx   =   08h
 core32idx   =   10h
 
+IFDEF IBMPC
 old_int15   dd  ?           ; old INT15h vector
+ENDIF ; IBMPC
+IFDEF NEC98
+old_int1f   dd  ?           ; old INT1fh vector
+ENDIF ; NEC98
 old_int2f   dd  ?           ; old INT2fh vector
 
 hma_used    db  0           ; set if HMA is used
@@ -299,7 +304,11 @@ xms_handle_table	stxms_handle_table	<0fdh, size xms_handle, 72, 0>
 _xms_logging_enabled db  0      ; debugging output 
 
 	public _x2max32
+IF (INTERFACE_VER GE 0300h)
+_x2max32		db  0
+ELSe
 _x2max32		db  1			; maximum XMS 2.0 free/available 32M
+ENDIF
 
 ;delay2ptr	DW	(OFFSET delay2)
 
@@ -335,6 +344,9 @@ endp    interrupt
 
 
 MASM	; have to switch to masm mode to use COMMENT blocks
+
+IFDEF IBMPC
+
 COMMENT !
 ; *** OLD CODE ***
 ;proc   delay
@@ -354,6 +366,7 @@ delay_check:
      ret
 endp delay
 
+ENDIF ; IBMPC
 
 ;******************************************************************************
 ; empties the keyboard processor's command queue
@@ -509,6 +522,7 @@ delay2_wait:
 	ret
 endp delay2
 END COMMENT!       
+ENDIF ; IBMPC
 IDEAL
 
 ;******************************************************************************
@@ -629,6 +643,7 @@ endp    test_a20
 ;******************************************************************************
 ; Interrupt handlers
 ;******************************************************************************
+IFDEF IBMPC
 ;******************************************************************************
 ; new INT15h handler
 ;
@@ -670,6 +685,35 @@ move_done:
 
 
 endp    int15_handler
+ENDIF ; IBMPC
+
+IFDEF NEC98
+;******************************************************************************
+; new INT1Fh handler
+;
+; this externally preserves A20 state on function 90h
+;
+
+proc    int1f_handler
+	cmp ah, 90h
+	je do_move
+jump_old_int1f:
+	jmp [cs: old_int1f]
+do_move:
+	call test_a20
+	jz jump_old_int1f	; just invoke BIOS call when A20 is disabled
+	; otherwise, enable a20 after move
+	pushf
+	call [cs: old_int1f]	; BIOS move will diable A20
+	pushf
+	push ax
+	call enable_a20
+	pop ax
+	popf
+	retf 2
+
+endp    int1f_handler
+ENDIF ; NEC98
 
 ;******************************************************************************
 ; new INT2Fh handler. Catches Func. 4300h+4310h
@@ -1550,6 +1594,7 @@ GDTdsthigh  db   0           ; Bits 24-31 of dest address.
 ; entry ESI = src linear adress
 ; entry EDI = dst linear adress
 ; entry ECX = length
+; note: use int 1Fh ah=90h on NEC PC-98
 
 public use_int15
 use_int15:
@@ -1580,9 +1625,14 @@ nomax1000:
     push ecx                 ; later used again
     push esi
     push es
+IFDEF NEC98
+    push bx
+    push di
+ENDIF ; NEC98
     push cs
     pop  es
 
+IFDEF IBMPC
 ;    lea si, [BIOSGDT]
     mov si, OFFSET BIOSGDT
     shr cx,1                ; number of words
@@ -1590,9 +1640,25 @@ nomax1000:
     clc
     mov ah,87h
     int 15h
+ELSE
+  IFDEF NEC98
+    mov bx, OFFSET BIOSGDT
+    xor si, si
+    xor di, di
+    clc
+    mov ah, 90h
+    int 1fh
+  ELSE
+    error no platform (use_int15)
+  ENDIF ; NEC98
+ENDIF ; IBMPC
 
     sti
 
+IFDEF NEC98
+    pop di
+    pop bx
+ENDIF ; NEC98
     pop es
     pop esi
     pop ecx                 ; get length back
@@ -2517,6 +2583,47 @@ a20failed:
     ret
 endp    check_a20
 
+IFDEF NEC98
+; NEC PC-98x1 (386+) fast A20
+; entry: ah == 0 A20 turn off, ah == 2 turn on, ax on stack
+disable_enable_a20_nec386:
+	mov al, 3
+	test ah, ah
+	jz dean_out
+	mov al, 2
+dean_out:
+	out 0f6h, al		; A20 control (03h=disable, 02h=enable)
+	out 5fh, al		; HW wait (at least 600ns)
+	pop ax
+	ret
+disable_enable_a20_nec386_end:
+
+proc detect_and_handle_nec386
+	mov si, OFFSET disable_enable_a20_nec386
+	call detect_and_handle_test
+	jc nec386_exit
+;	mov dx, OFFSET MsgNEC386
+;	mov ah, 9
+;	int 21h
+flag_nec386:
+	mov si, offset disable_enable_a20_nec386
+	mov cx, offset disable_enable_a20_nec386_end - offset disable_enable_a20_nec386
+trans_handler:
+	push di es
+	mov di, offset disable_enable_a20
+	push cs
+	pop es
+	rep movsb
+	pop es di
+	clc
+nec386_exit:
+	ret
+endp detect_and_handle_nec386
+
+
+ENDIF ; NEC98
+
+IFDEF IBMPC
 
 ; the so-called 'fast' A20 method replacement code
 ; entry: ah == 0 A20 turn off, ah == 2 turn on, ax on stack
@@ -2738,6 +2845,8 @@ flag_kbc:
 
 endp detect_and_handle_KBC
 
+ENDIF ; IBMPC
+
 ; upon entry si->disable/enable routine for a20 method being tested
 ; return carry set if failed, reset if success
 ;
@@ -2789,6 +2898,8 @@ dah_fail:
 endp	detect_and_handle_test
 
 ; reserve size of routine checks
+IFDEF IBMPC
+
 IF disable_enable_a20_BIOS_end - disable_enable_a20_BIOS gt disable_enable_a20_end-disable_enable_a20
     this is an error! reserve some space
 ENDIF
@@ -2801,13 +2912,17 @@ IF disable_enable_a20_KBC_end - disable_enable_a20_KBC gt disable_enable_a20_end
     this is an error! reserve some space
 ENDIF
 
+ENDIF ; IBMPC
+
 ; method feedback text
 MsgAlwaysA20	db 'HIMEM - Always On A20 method used',0dh,0ah,'$'
+IFDEF IBMPC
 MsgBIOSA20	db 'HIMEM - BIOS A20 method used',0dh,0ah,'$'
 MsgFastA20	db 'HIMEM - Fast A20 method used',0dh,0ah,'$'
 MsgPS2FastA20	db 'HIMEM - PS/2 Fast A20 method used',0dh,0ah,'$'
 MsgPort92A20	db 'HIMEM - Port 92h A20 method used',0dh,0ah,'$'
 MsgKBCA20	db 'HIMEM - KBC A20 method used',0dh,0ah,'$'
+ENDIF ; IBMPC
 MsgUnknownA20	db 'HIMEM - No Supported A20 method detected',0dh,0ah,'$'
 
 
@@ -2955,6 +3070,43 @@ cfstore DB  ?
 zfstore DB  ?
 
 
+IFDEF NEC98
+; memory check emulation (NEC PC-98x1)
+
+proc fake_int15_nosupport
+fake_int15_e820:
+	mov ah, 86h
+	stc
+	ret
+endp fake_int15_nosupport
+
+proc fake_int15_e801
+	push ds
+	xor cx, cx
+	mov ds, cx
+	mov cl, [byte ptr 0401h]	; extended memory (1M~16M, counted by 128K)
+	shl cx, 7			; 128k <- 1k
+	mov dx, [word ptr 0594h]	; extened memory (above 16M, counted by 1Mbytes)
+	shl dx, 4			; 1024k <- 64k
+	pop ds
+	xor ax, ax
+	xor bx, bx
+	ret
+endp fake_int15_e801
+
+proc fake_int15_88
+	push ds
+	xor ax, ax
+	mov ds, ax
+	mov al, [byte ptr 0401h]	; extended memory (1M~16M by 128K)
+	shl ax, 7
+	pop ds
+	clc
+	ret
+endp fake_int15_88
+
+ENDIF ; NEC98
+
 proc    initialize
     pushf
     push    eax ebx ecx edx esi edi
@@ -2990,6 +3142,11 @@ have_386:
 ; process forced methods
 	cmp	[_alwayson_set],0
 	jne	flag_alwayson
+IFDEF NEC98
+;	call flag_nec386
+;	jmp got_type
+ENDIF
+IFDEF IBMPC
 	cmp	[_bios_set],0
 	je	forced_2
 	call	flag_bios
@@ -3014,6 +3171,7 @@ forced_5:
 	je	forced_done
 	call	flag_port92
 	jmp	got_type
+ENDIF ; IBMPC
 forced_done:
 
 ; check if the A20 line is on, if so assume it's always on
@@ -3029,6 +3187,7 @@ flag_alwayson:
 	jmp	got_type
 
 check_A20_method:
+IFDEF IBMPC
 ;check_BIOS_method:
 ;    call detect_and_handle_BIOS	; see if BIOS A20 handler supported
 ;	jnc	got_type
@@ -3057,7 +3216,11 @@ check_A20_method:
 ;  reported to crash some machines which don't support that method
     call detect_and_handle_port92
 	jnc	got_type
-
+ENDIF ; IBMPC
+IFDEF NEC98
+	call detect_and_handle_nec386
+	jnc got_type
+ENDIF ; NEC98
 ; out of options to try
 unknown_a20:
 	mov	dx,OFFSET MsgUnknownA20
@@ -3100,8 +3263,12 @@ e820_loop:
     mov [e820map.baselow],eax   ; insurance against buggy BIOS
     mov [e820map.type],eax
     mov [e820map.lenlow],eax
+IFDEF IBMPC
     mov ax,0e820h
     int 15h
+ELSE ;IBMPC
+    call fake_int15_e820
+ENDIF ; IBMPC
     setc    [cfstore]   ; keep carry flag status
     cmp eax,SMAP
     jne e820_bad    ; failure
@@ -3166,8 +3333,12 @@ e801_check:
     mov bx,ax
     mov cx,ax
     mov dx,ax
+IFDEF IBMPC
     mov ax,0e801h
     int 15h
+ELSE ; IBMPC
+    call fake_int15_e801
+ENDIF ; IBMPC
     jc  try_88h
     mov ax,cx
     or  ax,dx
@@ -3192,8 +3363,12 @@ e801_compute:
 ; e801h didn't do the trick, fall back to old 88h with 64M max
 try_88h:
     clc
+IFDEF IBMPC
     mov ah,88h
     int 15h
+ELSE ; IBMPC
+    call fake_int15_88
+ENDIF ; IBMPC
     mov dx,offset xms_sizeerr
     jc  error_exit
 
@@ -3237,6 +3412,7 @@ save_size:
     mov dx,offset int2f_handler
     int 21h
     
+IFDEF IBMPC
                             ; install own INT15h
     mov ax,3515h            ; getvect --> es:bx
     int 21h
@@ -3247,6 +3423,19 @@ save_size:
     mov ax,2515h            ; setvect -->ds:dx
     mov dx,offset int15_handler
     int 21h
+ENDIF ; IBMPC
+IFDEF NEC98
+                            ; install own INT1fh
+    mov ax,351fh            ; getvect --> es:bx
+    int 21h
+
+    mov [word old_int1f+2],es
+    mov [word old_int1f],bx
+
+    mov ax,251fh            ; setvect -->ds:dx
+    mov dx,offset int1f_handler
+    int 21h
+ENDIF ; NEC98
     
 
     pop es     

@@ -1,0 +1,131 @@
+#
+# Makefile for (Open)Watcom's wmake.
+# to build:
+#   wmake -h -f Makefile.wc
+#
+# When you want to use tasm32, type
+#   wmake -h -f Makefile.wc AS=tasm32
+#
+
+.ERASE
+
+#D=/
+D=\
+
+AS=tasm
+#AS=msdos tasm.exe
+#AS=tasm32
+AFLAGS=/t /ml /m /z
+#AFLAGS=/mx /m /z /la /n
+CC=*wcl
+MMODEL=s
+CFLAGS=-zq -e5 -we -wx -j -s -r -zl -zp1 -m$(MMODEL) -d1 -ecc -wcd=120
+
+#COMPILE=$(CC) $(CFLAGS) -c -fr -fo=$^@ $[@
+#ASSEMBLE=$(AS) $(AFLAGS) $[@,$^@;
+COMPILE_IBM=$(CC) $(CFLAGS) -DIBMPC -c -fr -fo=$^@ $[@
+COMPILE_NEC=$(CC) $(CFLAGS) -DNEC98 -c -fr -fo=$^@ $[@
+ASSEMBLE_IBM=$(AS) $(AFLAGS) -DIBMPC $[@,$^@;
+ASSEMBLE_NEC=$(AS) $(AFLAGS) -DNEC98 $[@,$^@;
+
+!ifndef WATCOM
+WATCOM=$(%WATCOM)
+!endif
+
+RM=rm
+MKDIR=mkdir
+
+.before:
+	@-$(MKDIR) ibmpc
+	@-$(MKDIR) nec98
+
+
+all: ibmpc nec98 .SYMBOLIC
+
+ibmpc: ibmpc$(D)emm386.exe ibmpc$(D)himem.exe .SYMBOLIC
+
+nec98: nec98$(D)emm386.exe nec98$(D)himem.exe .SYMBOLIC
+
+
+clean: .SYMBOLIC
+	-$(RM) -f ibmpc$(D)emm386.exe ibmpc$(D)himem.exe
+	-$(RM) -f ibmpc$(D)*.obj ibmpc$(D)*.err
+	-$(RM) -f nec98$(D)emm386.exe nec98$(D)himem.exe
+	-$(RM) -f nec98$(D)*.obj nec98$(D)*.err
+	-$(RM) -f $(LIB_WC86)
+
+
+OBJS_EMM386_IBM=ibmpc$(D)emm386.obj ibmpc$(D)emm386c.obj
+OBJS_HIMEM_IBM=ibmpc$(D)himem64.obj ibmpc$(D)himemc.obj ibmpc$(D)xmstest.obj
+OBJS_COMM_IBM=ibmpc$(D)prf.obj ibmpc$(D)useful.obj
+OBJS_EMM386_NEC=nec98$(D)emm386.obj nec98$(D)emm386c.obj
+OBJS_HIMEM_NEC=nec98$(D)himem64.obj nec98$(D)himemc.obj nec98$(D)xmstest.obj
+OBJS_COMM_NEC=nec98$(D)prf.obj nec98$(D)useful.obj
+
+WC86LIBC=$(WATCOM)$(D)lib286$(D)dos$(D)clib$(MMODEL).lib
+LIB_WC86=wc86.lib
+
+ibmpc$(D)emm386.exe: $(OBJS_EMM386_IBM) $(OBJS_COMM_IBM) $(LIB_WC86)
+	*wlink op quiet op caseexact op noext name $^@ format dos file { $(OBJS_EMM386_IBM) $(OBJS_COMM_IBM) } library { $(LIB_WC86) }
+
+ibmpc$(D)himem.exe: $(OBJS_HIMEM_IBM) $(OBJS_COMM_IBM) $(LIB_WC86)
+	*wlink op quiet op caseexact op noext name $^@ format dos file { $(OBJS_HIMEM_IBM) $(OBJS_COMM_IBM) } library { $(LIB_WC86) }
+
+nec98$(D)emm386.exe: $(OBJS_EMM386_NEC) $(OBJS_COMM_NEC) $(LIB_WC86)
+	*wlink op quiet op caseexact op noext name $^@ format dos file { $(OBJS_EMM386_NEC) $(OBJS_COMM_NEC) } library { $(LIB_WC86) }
+
+nec98$(D)himem.exe: $(OBJS_HIMEM_NEC) $(OBJS_COMM_NEC) $(LIB_WC86)
+	*wlink op quiet op caseexact op noext name $^@ format dos file { $(OBJS_HIMEM_NEC) $(OBJS_COMM_NEC) } library { $(LIB_WC86) }
+
+wc86.lib: $(WC86LIBC)
+	wlib -q $(WC86LIBC) *i4m *i4d
+	wlib -q -n -b $@ +i4m +i4d
+	@$(RM) i4m.obj i4d.obj
+
+#
+
+ibmpc$(D)emm386c.obj: emm386.c useful.h
+	$(COMPILE_IBM)
+
+ibmpc$(D)prf.obj: prf.c portab.h
+	$(COMPILE_IBM)
+
+ibmpc$(D)useful.obj: useful.c useful.h
+	$(COMPILE_IBM)
+
+ibmpc$(D)emm386.obj: emm386.asm
+	$(ASSEMBLE_IBM)
+
+ibmpc$(D)himem64.obj: himem64.asm
+	$(ASSEMBLE_IBM)
+
+ibmpc$(D)himemc.obj: himemc.c useful.h
+	$(COMPILE_IBM)
+
+ibmpc$(D)xmstest.obj: xmstest.c useful.h
+	$(COMPILE_IBM)
+
+#
+
+nec98$(D)emm386c.obj: emm386.c useful.h
+	$(COMPILE_NEC)
+
+nec98$(D)prf.obj: prf.c portab.h
+	$(COMPILE_NEC)
+
+nec98$(D)useful.obj: useful.c useful.h
+	$(COMPILE_NEC)
+
+nec98$(D)emm386.obj: emm386.asm
+	$(ASSEMBLE_NEC)
+
+nec98$(D)himem64.obj: himem64.asm
+	$(ASSEMBLE_NEC)
+
+nec98$(D)himemc.obj: himemc.c useful.h
+	$(COMPILE_NEC)
+
+nec98$(D)xmstest.obj: xmstest.c useful.h
+	$(COMPILE_NEC)
+
+

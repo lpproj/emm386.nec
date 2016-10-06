@@ -102,6 +102,7 @@ short __rand(void)
 int XMScall( unsigned rAX, unsigned rDX)
 {
     if (xmsPtr == NULL)
+#if defined(__TURBOC__)
         {
         _asm mov ax, 4300h
         _asm int 2fh                /* XMS installation check */
@@ -118,6 +119,22 @@ int XMScall( unsigned rAX, unsigned rDX)
         
         }
 detect_done:
+#else
+        {
+            xmsPtr = NULL;
+            _asm {
+                mov ax, 4300h
+                int 2fh
+                cmp al, 80h
+                jne xmscall_detect_done
+                mov ax, 4310h
+                int 2fh
+                mov word ptr [xmsPtr], bx
+                mov word ptr [xmsPtr + 2], es
+            xmscall_detect_done:
+            }
+        }
+#endif
 
     if (xmsPtr == NULL)
         return 0;
@@ -158,6 +175,7 @@ void fillMem(long *buff,int hnum, int offsetK)
 long buff1[256];
 long buff2[256];
 
+int
 XMSmove(unsigned dhandle, long doffset,
         unsigned shandle, long soffset,
         long length)
@@ -289,6 +307,7 @@ end:
 }
 #endif /* TEST_XMS_REALLOC */
 
+int
 XMSTESTmain(char verbose)
 {
     int numhandles;
@@ -562,6 +581,7 @@ error_reverify:
 */	
 
 
+int
 XMSKILL64()
 {
 #ifndef __KILL64

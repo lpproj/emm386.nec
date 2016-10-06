@@ -5,7 +5,15 @@
 		
 */	
 
+#if defined(__TURBOC__)
 #pragma warn -asc
+# if !defined(__BORLANDC__) && (__TURBOC__ < 0x300)
+#  define _asm asm
+# endif
+#else
+#pragma pack(1)
+#define asm _asm
+#endif
 
 typedef unsigned char uchar;
 typedef unsigned int   uint;

@@ -138,6 +138,13 @@ V86_TOS         EQU 200H             ; Size of monitor stack
 EXT             EQU 14*1024                  ; here you can enter the
                                              ; optional size in KB
 
+IFDEF IBMPC
+DEFAULT_FRAME	equ 0E000h
+ENDIF ; IBMPC
+IFDEF NEC98
+DEFAULT_FRAME	equ 0C000h
+ENDIF ; NEC98
+
 MAX_EMS_PAGES_ALLOWED	EQU	800h	; 32M max mem (16K each page), always even
 ; keep this value low for buggy VCPI clients that fail with large free amounts
 MAXMEM16K_DEFAULT	EQU	1E00h	; 120M in 16K blocks
@@ -321,7 +328,11 @@ interrupt:
 
 	mov          es:[di+0eh+2],cs    ; set end address
 	mov word ptr es:[di+0eh  ],0	 ;
+IF 1
+	mov word ptr es:[di+3	 ],0100h ; STATUS_OK
+ELSE
 	mov word ptr es:[di+3	 ],0800h ; STATUS_OK
+ENDIF
 
 
 	call far ptr go_driver_entry	 ; this will be patched
@@ -337,7 +348,7 @@ interrupt:
 ; good enough for FreeDOS=UMB, for nothing else :-)
 ;*********************************************************
 
-public _UMBhandler, _UMBoldhandler
+public _UMBhandler, _UMBOldhandler
 
 _UMBhandler:
 
@@ -365,7 +376,7 @@ TheUMBHandler:
 
 not_for_us:
 	db 0eah					    ; jmp far  UMBoldhandler
-_UMBoldhandler dd 0
+_UMBOldhandler dd 0
 
 
 
@@ -1175,6 +1186,7 @@ __print endp
 ; and wait for '3FingerSalut'
 ;*********************************************************************
 
+IFNDEF NEC98
 	public	_IllegalOpcodeHandler
 _IllegalOpcodeHandler proc FAR
 
@@ -1290,9 +1302,16 @@ stopit: sti
 	call printhex
 	db CR,'EMM386 - unable to continue - Please reboot',0
 	inc dx
+IF 1
+stopit_loopit:
+	;hlt
+	jmp short stopit_loopit
+ELSE
 	jmp stopit			; should never be executed
+ENDIF
 
 _IllegalOpcodeHandler	endp
+ENDIF ; !NEC98
 
 DRIVERCODE ENDS
 
@@ -1356,6 +1375,7 @@ DUMMY_CALL:			          ; In case software (among them TURBO Pascal
                                           ; EMM!
 
 
+IFDEF IBMPC
 ;******************************************************************************
 ; INT15 handler:
 ;    everything forwarded to old handler, except int15/87 = move_memory
@@ -1400,6 +1420,31 @@ NEW15 PROC FAR
 ;	RET 2
 	jmp updated_iret
 NEW15 ENDP
+ENDIF ; IBMPC
+
+IFDEF NEC98
+NEW1F PROC FAR
+	cmp	ah, 90h
+	je	@@do_int1f90
+	jmp	cs:dword ptr [OLDINT1F]
+; (NEC98) int 1Fh AH=90h copy extended memory
+;       AH = 90h
+;       CX = number of bytes (not words) to copy (0 as 65536)
+;       ES:BX -> global descriptors table (same as PC/AT)
+;       SI = offset of source address to copy
+;       DI = offset of destination to copy
+;Return:CF set on error
+;       (all registers are preverved, probably...)
+@@do_int1f90:
+	push ax
+	mov ah, 90h
+	int 67h
+	add ah, 0ffh		; set cy=1 if ah != 0
+	pop ax
+	sti
+	ret 2
+NEW1F ENDP
+ENDIF ; NEC98
 ;******************************************************************************
 
 ;MSG00   DB      CR,LF,'Left 8086-workingmode and returned to REAL-'
@@ -1440,6 +1485,22 @@ OLD40           DD      ?               ; Address of old INT 40h
 ;
 ; Control of INT 13h and also INT 40h because of DMA-support
 ;
+; todo: NEC98
+IFDEF NEC98
+updated_iret:
+	push	bp
+	push	ax
+	pushf
+	pop	ax
+	and	al,1		; CY flag
+	mov	bp,sp
+	and	BYTE PTR [bp+2+2+4],0feh	; bp is ss: relative, strip old CY
+	or	BYTE PTR [bp+2+2+4],al
+	pop	ax
+	pop	bp
+	iret
+ENDIF ; NEC98
+IFDEF IBMPC
 NEW13 PROC FAR
         BTS     CS:[Flags],INT13Activ           ; The beginning.
         BTR     CS:[Flags],NeedBuffer           ; Rather disable always.
@@ -1497,17 +1558,27 @@ HLT40:  HLT                                     ; Hello, 32-Bit World !
 	jmp	updated_iret
 
 NEW40 ENDP
+ENDIF ; IBMPC
 ;(#-3-#)
 
 	ALIGN   4
 ;MSGTAB  DW      MSG08,MSG09,MSG0A,MSG0B,MSG0C,MSG0D,MSG0E,MSG0F
 
 PSP		DW      ?            ; PSP of the program
+IFDEF IBMPC
 OLDINT15        DD      ?            ; Address of the old INT 15h
+ENDIF ; IBMPC
+IFDEF NEC98
+OLDINT1F        DD      ?            ; Address of the old INT 1Fh
+ENDIF ; NEC98
 
 INTS_86         DW      3FFH	     ; Size and state of the Interrupttable
                 DD      0            ; (IDT) in REAL-Mode
+IFDEF NEC98
+IDT_PTR         DW      IDT_LEN-1    ; Size and state IDT in Pro
+ELSE
 IDT_PTR         DW      7FFH	     ; Size and state IDT in Pro
+ENDIF ; NEC98
                 DW      OFFSET IDT,0 ; (Will be adjusted later again !)
 GDT_PTR         DW      GDT_LEN-1	 ; Size and state GDT in Pro
 		DW      OFFSET GDT,0
@@ -1545,7 +1616,7 @@ EMSPAGETABLE    DD      ?	    ; ^ up allocation table der
 EMSNAMETABLE	DD      ?	    ; storage for EMS handle names
 _MAXPAGES       DW      0	    ; EMS-pages Maximal available
 _PAGESAVAIL     DW      0	    ; EMS-pages currently available
-_FRAME          DW      0D000H	    ; EMS-page Segmentaddress of the
+_FRAME          DW      DEFAULT_FRAME	    ; EMS-page Segmentaddress of the
 FRAMEANCHOR     DD      ?	    ; EMS-"Frame" ^ up entry in
 PHYSPAGETABLE   DW      4 DUP (-1)  ; Page Table up-to-date faded in
 				    ; pages
@@ -1797,8 +1868,7 @@ TSS: ;     LABEL BYTE
 ;(#-4-#)
 Comment $
 ;(#-4a-#)
-DB      10000H/8 DUP (0)        ; TSS all I/O-Addresses allowed, without 
-DMA!
+DB      10000H/8 DUP (0)        ; TSS all I/O-Addresses allowed, without DMA!
 ;(#-4a-#)
 $
 ;*********************************************************************
@@ -1806,6 +1876,10 @@ $
 ; The line "DB 10000H/8 DUP (0)" directly before this new change/adaptation
 ; has to be remarked or deleted!
 
+IFDEF NEC98
+		DB      10000H/8 DUP (0)		; TSS all I/O-Addresses allowed, without DMA!
+ENDIF ; NEC98
+IFDEF IBMPC
 		DB      11111111B,00011000B		; DMA-Controller #1
 ;DB	0,0
 		; * trap ports 0..7, b, c ?
@@ -1822,6 +1896,7 @@ $
 		; * trap port d8 ?
 		DB      (10000H-0E0H)/8 DUP (0)
 		; * allow all other ports
+ENDIF ; IBMPC
 ;(#-4-#)
                 DB      0FFH                 ; wg. Readmechanism of the 80386
 TSS_LEN EQU     $-TSS
@@ -1857,6 +1932,7 @@ REPMOVSB MACRO
         AND     DI,NOT 3			; Addresses in Longword
         ENDM					; round border, clear Bits 1 & 0
 
+IFDEF IBMPC
 _pmessage macro line,col,c1,c2
 	push ds
 	push ax
@@ -1871,6 +1947,7 @@ _pmessage macro line,col,c1,c2
 	pop ax
 	pop ds
 	endm
+ENDIF ; IBMPC
 
 _pause macro line,col,c1,c2
 	push ebx
@@ -2395,6 +2472,7 @@ V86_MONITOR PROC NEAR
 	CMP     CX,0DH*4             ; Privilegviolation ?
         JNZ     @@V86_ABORT_IT	     ; Everything else lies below it after all!
 
+IFDEF IBMPC
 ; see if SoundBlaster INT 3 forced to 1ah error code GPF
 	CMP	DWORD PTR [ESP+14],1ah
 	jne	notsb
@@ -2413,6 +2491,7 @@ V86_MONITOR PROC NEAR
 	inc	DWORD PTR [ESP+2]		; increment EIP past INT 3 instruction
 	jmp	V86_MONITOR
 notsb:
+ENDIF ; IBMPC
 
         MOV     AX,UNIVERSE_SEL      ; Hello World, hello Universe !
 	MOV     DS,AX
@@ -2553,11 +2632,14 @@ rdmsrshare:
         JNZ     @@Do_Hlt		; the cause for the
 
 
+; todo: NEC98
+IFDEF IBMPC
 	MOV     AX,[ESP+18]             ; General Protection Fault ?
 	CMP     AX,OFFSET HLT13		; * magical HLT in our disk / int 13 handler
         JZ      TRANSFER_BUFF		; copy buffer back
 	CMP     AX,OFFSET HLT40		; * magical HLT in our disk / int 40 handler
 	JZ      TRANSFER_BUFF
+ENDIF ; IBMPC
 @@Do_Hlt:
 ;(#-7-#)
 
@@ -2676,11 +2758,14 @@ rdmsrshare:
 	JMP     @@Bye
 
 @@Do_IO:
+; todo: NEC98
+IFDEF IBMPC
         CMP     DX,80H				; Has a Page-register
         JB      LIKE_DMA			; been adressed, or one
         CMP     DX,8FH				; of both DMA-
 	JBE     LIKE_PAGE			; Controllers ?
 	JMP     LIKE_DMA
+ENDIF ; IBMPC
 
 @@DoIO_DX:
         REPCMD  PUSH,<EDX,ESI,EDI>	    	; save Register  .
@@ -2725,18 +2810,23 @@ TRANSFER_BUFF ENDP			; Mode.
 ;
 ; In: DX : Port-address; AL : Value
 ;
+; todo: NEC98
 LIKE_PAGE PROC NEAR
+IFDEF IBMPC
         OUT     DX,AL				; release data
         MOV     BX,DX				; Look up the number that corresponds to the port
         MOVZX   EDI,BYTE PTR PageLookUp[BX-80H]
 	MOV     PageReg[EDI],AL			; Buffer Bits 24-16
 	BTR     ChanFlags[EDI*2],PagePrgrd	; Program page register
 	JMP     READY?
+ENDIF ; IBMPC
 LIKE_PAGE ENDP
 ;
 ; Supervise certain registers of the DMA (direct memory access) components
 ;
+; todo: NEC98
 LIKE_DMA PROC NEAR
+IFDEF IBMPC
 	OUT     DX,AL                   ; Pass on only once ...
         CMP     DX,0C0H                 ; Should the 2nd Controller
         JB      @@What?                 ; be programmed ?
@@ -2833,6 +2923,7 @@ READY?: TEST    ChanFlags[EDI*2],1111B
 @@Clear16:
         BTR     [Flags],HiLoFlag2		; Number 2's turn..
 	JMP     @@Bye
+ENDIF ; IBMPC
 LIKE_DMA ENDP
 ;
 ; Check a memory-area, whether it lies in continuous physical memory
@@ -2894,6 +2985,7 @@ CONTINUOUS? ENDP
 ;
 ; In: EDI: Channelnumber 0..7
 ;
+; todo: NEC98
 CHK_CHANNEL PROC NEAR
         MOVZX   ECX,BlockLen[EDI*2]     ; Calculate length of the blocks
         INC     ECX                     ; which are transferred
@@ -3002,6 +3094,7 @@ CHK_CHANNEL ENDP
 
 pauser proc near
 
+IFDEF IBMPC
 	push ds
 	push ax
 	mov ax,UNIVERSE_SEL
@@ -3032,12 +3125,14 @@ pauser proc near
 
 	pop ax
 	pop ds
+ENDIF ; IBMPC
 	ret
 
 pauser endp
 
 V86_MONITOR     ENDP
 
+IFDEF IBMPC
 ; this handler is always present unless NOALTBOOT option is on.
 ; the following behavior remarks are no longer true:
 ;
@@ -3117,6 +3212,7 @@ kb_portreset:
 					; where the call comes from must
 					; stay on stack for the handler.
 KBOARD ENDP
+ENDIF ; IBMPC
 ;
 ; Entrypoint because of the task swap after the switch into
 ; protected mode to start the virtual 8086 -working
@@ -3183,9 +3279,14 @@ INTENTRYNR MACRO INTRNR,ADDRESS      ;; Purposefully call a routine
 		ENDM
 
 INT_TABLE:
+IFDEF IBMPC
 		INTENTRY 0,8                 ; Redirect All Interrupts, up to the
 		INTENTRYNR 9,<CALL KBOARD> ; keyboard- Interrupt to the
 				             ; Monitor
+ELSE
+		; (NEC98)
+		INTENTRY 0,9
+ENDIF ; IBMPC
 
 ;********************************************************************
 ;(*-7-*)
@@ -3240,6 +3341,7 @@ EMM_ENTRY PROC NEAR
 					  ; hack: handle undocumented
 					  ; int67/87 function = simulated int15/87
 					  ;
+IFDEF IBMPC
 		cmp     ah,087h
 		jne	normal_emm_functions
 
@@ -3248,6 +3350,13 @@ EMM_ENTRY PROC NEAR
 		CALL    SIMULATE_INT1587
 ;		jmp     @@BYECX
 		jmp     BYEEMS
+ENDIF ; IBMPC
+IFDEF NEC98
+		cmp	ah,90h
+		jne	normal_emm_functions
+		call	SIMULATE_INT1F90
+		jmp	BYEEMS
+ENDIF ; NEC98
 
 
 normal_emm_functions:
@@ -3516,6 +3625,7 @@ spec_done:
 ; 1fh    BYTE    8 bit  linear source adress, high
 ;************************************************************
 
+IFDEF IBMPC
 SIMULATE_INT1587 proc near
 
 ;        ES:SI -> global descriptor table (see #0403)
@@ -3764,6 +3874,279 @@ SIMULATE_INT1587 proc near
 	ret
 
 SIMULATE_INT1587 endp
+ENDIF; IBMPC
+IFDEF NEC98
+SIMULATE_INT1F90 proc near
+; NEC PC-98 int 1Fh ah=90h
+; input:
+; ES:BX -> global descriptor table (same as PC/AT)
+; SI -> offset address of source
+; DI -> offset address of destination
+; CX -> count of bytes (not words!), 0 means 65536
+; return:
+; CF -> set if error
+;       all registers (except of flags) will be preserved, probably...
+
+	pushad		; 0:edi 4:esi 8:ebp 12:esp 16:ebx 20:edx 24:ecx 28:eax
+
+	movzx	ecx,cx				; verify size
+	or	cx, cx
+	jne	@@verify_size_2
+	mov	ecx, 10000h			; 0 as 64K (65536)
+@@verify_size_2:
+
+	; make edi = linear address of command
+	; note: need fixup V8086_ES with sizeof(pushad)
+	movzx	edi, word ptr [V8086_ES + 32]
+	shl	edi, 4
+	movzx	esi, bx
+	add	edi, esi
+
+	dec	ecx
+; source
+; 10h  2 BYTEs   16bit  segment limit lower 16bits
+; 16h    BYTE     4bit  bit0-3 (48-51) segment limit higher 4bits
+;                 1bit  bit7 (55) granularity of limit (1=4K)
+; destination
+; 18h  2 BYTEs
+; 1Eh    BYTE
+	mov	dl, byte ptr [edi+16h]
+	and	dx, 000fh
+	shl	edx, 16
+	mov	dx, word ptr [edi+10h]
+	test	byte ptr [edi+16h], 80h
+	jz	@@verify_size_3s
+	shl	edx, 12				; counted by 4K if G=1
+@@verify_size_3s:
+	movzx	eax, word ptr [esp + 4]	; si
+	add	eax, ecx
+	cmp	eax, edx
+	ja	@@invalid_command
+	mov	dl, byte ptr [edi+1eh]
+	and	dx, 000fh
+	shl	edx, 16
+	mov	dx, word ptr [edi+18h]
+	test	byte ptr [edi+1eh], 80h
+	jz	@@verify_size_3d
+	shl	edx, 12				; counted by 4K if G=1
+@@verify_size_3d:
+	movzx	eax, word ptr [esp]		; di
+	add	eax, ecx
+	cmp	eax, edx
+	ja	@@invalid_command
+
+	inc	ecx				; restore original ecx
+						; we don't care about segment access rights
+
+
+; load the source/destination adresses
+;
+; 12h  3 BYTEs   24-bit linear source address, low byte first
+; 17h    BYTE    8 bit  linear source adress, high
+; 1Ah  3 BYTEs   24-bit linear destination address, low byte first
+; 1fh    BYTE    8 bit  linear source adress, high
+
+
+	; get linear source address
+	mov	dh, byte ptr [edi+17h]
+	mov	dl, byte ptr [edi+14h]
+	shl	edx, 16
+	mov	dx, word ptr [edi+12h]
+	movzx	esi, word ptr [esp + 4]	; original si
+	add	esi, edx
+	; and destination
+	mov	dh, byte ptr [edi+1fh]
+	mov	dl, byte ptr [edi+1ch]
+	shl	edx, 16
+	mov	dx, word ptr [edi+1ah]
+	movzx	edi, word ptr [esp]		; original di
+	add	edi, edx
+
+	cmp	fs:[_MEMCHECK],0
+	je	@@accessok
+
+; adjust for end past current memory by creating page directory entry
+;  and page table entries on the fly with linear == physical mapping
+;	push	eax
+;	push	ebx
+;	push	edx
+;	push	ebp
+
+	mov	edx,edi
+	add	edx,ecx
+	dec	edx				; edx == final byte of destination
+	mov	eax,edi
+	shr	eax,22
+	shr	edx,22
+	xor	bp,bp
+
+	mov	ebx,fs:[PAGEDIR]
+	cmp	eax,edx
+	je	@@dentry1
+
+	lea	edx,[ebx+edx*4]	; edx -> destination page directory entry
+	cmp	DWORD PTR ds:[edx],0
+	jne	@@dentry1		; page directory entry already set
+
+; clear previous destination page directory entry
+	mov	ebp,fs:[ScratchDirD2]
+	or	ebp,ebp
+	je	@@dupdir2
+	mov	DWORD PTR ds:[ebp],0
+
+@@dupdir2:
+	mov	fs:[ScratchDirD2],edx	; update scratch destination page directory entry pointer
+	mov	ebp,fs:[ScratchDest]
+	add	ebp,1000h		; second scratch page table following first
+	mov	ds:[edx],ebp	; page dir entry -> scratch 
+	or	BYTE PTR ds:[edx],3
+	mov	bp,1			; flag that second entry updated
+
+@@dentry1:
+	lea	ebx,[ebx+eax*4]	; ebx -> destination page directory entry
+	cmp	DWORD PTR ds:[ebx],0
+	je	@@dclear1		; no previous setting
+	or	bp,bp
+	je	@@checksrc		; page directory entry already set, second entry not used
+	mov	eax,fs:[ScratchDest]	; eax -> start of scratch page tables
+	jmp	@@dsetpages		; set page table entries
+
+; clear previous destination page directory entry
+@@dclear1:
+	mov	eax,fs:[ScratchDirD1]
+	or	eax,eax
+	je	@@dupdir1
+	mov	DWORD PTR ds:[eax],0
+
+@@dupdir1:
+	mov	fs:[ScratchDirD1],ebx	; update scratch destination page directory entry pointer
+	mov	eax,fs:[ScratchDest]
+	mov	ds:[ebx],eax	; page dir entry -> scratch 
+	or	BYTE PTR ds:[ebx],3
+
+; set up two scratch page tables for identity mapping
+@@dsetpages:
+	push	ecx
+	mov	cx,2048			; 2*1K dword entries
+	mov	ebx,edi
+	and	ebx,0ffc00000h
+	or	bl,3			; set status bits
+@@dscratchloop:
+	mov	ds:[eax],ebx
+	add	eax,4
+	add	ebx,1000h
+	loop	@@dscratchloop
+	pop	ecx
+
+@@checksrc:
+	mov	edx,esi
+	add	edx,ecx
+	dec	edx				; edx == final byte of source
+	mov	eax,esi
+	shr	eax,22
+	shr	edx,22
+	xor	bp,bp
+
+	mov	ebx,fs:[PAGEDIR]
+	cmp	eax,edx
+	je	@@sentry1
+
+	lea	edx,[ebx+edx*4]	; edx -> source page directory entry
+	cmp	DWORD PTR ds:[edx],0
+	jne	@@sentry1		; page directory entry already set
+
+; clear previous source page directory entry
+	mov	ebp,fs:[ScratchDirS2]
+	or	ebp,ebp
+	je	@@supdir2
+	mov	DWORD PTR ds:[ebp],0
+
+@@supdir2:
+	mov	fs:[ScratchDirS2],edx	; update scratch source page directory entry pointer
+	mov	ebp,fs:[ScratchSource]
+	add	ebp,1000h		; second scratch page table following first
+	mov	ds:[edx],ebp	; page dir entry -> scratch 
+	or	BYTE PTR ds:[edx],3
+	mov	bp,1			; flag that second entry updated
+
+@@sentry1:
+	lea	ebx,[ebx+eax*4]	; ebx -> source page directory entry
+	cmp	DWORD PTR ds:[ebx],0
+	je	@@sclear1		; no previous setting
+	or	bp,bp
+	je	@@checkdone		; page directory entry already set, second entry not used
+	mov	eax,fs:[ScratchSource]	; eax -> start of scratch page tables
+	jmp	@@ssetpages		; set page table entries
+
+; clear previous source page directory entry
+@@sclear1:
+	mov	eax,fs:[ScratchDirS1]
+	or	eax,eax
+	je	@@supdir1
+	mov	DWORD PTR ds:[eax],0
+
+@@supdir1:
+	mov	fs:[ScratchDirS1],ebx	; update scratch source page directory entry pointer
+	mov	eax,fs:[ScratchSource]
+	mov	ds:[ebx],eax	; page dir entry -> scratch 
+	or	BYTE PTR ds:[ebx],3
+
+; set up two scratch page tables for identity mapping
+@@ssetpages:
+	push	ecx
+	mov	cx,2048			; 2*1K dword entries
+	mov	ebx,esi
+	and	ebx,0ffc00000h
+	or	bl,3			; set status bits
+@@sscratchloop:
+	mov	ds:[eax],ebx
+	add	eax,4
+	add	ebx,1000h
+	loop	@@sscratchloop
+	pop	ecx
+
+@@checkdone:
+;	pop	ebp
+;	pop	edx
+;	pop	ebx
+;	pop	eax
+
+@@accessok:
+	mov dx,es				; get es=ds
+	push ds
+	pop es
+
+	cld
+
+IF 0
+	REP MOVS BYTE PTR [ESI],BYTE PTR [EDI];
+ELSE
+	push ecx
+	shr ecx,2
+	REP MOVS DWORD PTR [ESI],DWORD PTR [EDI];
+	BIG_NOP;
+	pop ecx
+	and ecx, 3
+	REP MOVS BYTE PTR [ESI],BYTE PTR [EDI];
+	BIG_NOP;
+ENDIF
+
+	mov es,dx
+
+@@ok:
+	mov byte ptr [esp + 29], 0	; AH = 0
+	;clc
+@@exit:
+	popad
+	ret
+
+@@abort:
+@@invalid_command:
+	mov byte ptr [esp + 29], 80h	; AH = 80h
+	;stc
+	jmp short @@exit
+SIMULATE_INT1F90 endp
+ENDIF ; NEC98
 
 
 CALL_TABLE DW OFFSET GET_STATUS
@@ -4057,7 +4440,9 @@ MAP_HANDLE_PAGE PROC NEAR
 	push	esi
 	push	edi
 	and	di,0f000h	; strip off status bits of physical address, enforce 4K alignment
+IFDEF IBMPC
 	push	edi
+ENDIF ; IBMPC
 	movzx	esi,al
 	shl	esi,12		; convert segment frame to absolute address
 	mov	cx,1000h/4	; map 4K block in dwords
@@ -4068,9 +4453,11 @@ shadowloop:
 	add	esi,4
 	dec	cx
 	jne	shadowloop
+IFDEF IBMPC
 	pop	edi
 	add	edi,0ff0h
 	mov	WORD PTR [edi],09cdh	; force INT 9 (to KBOARD) at FFFF:0
+ENDIF ; IBMPC
 	pop	edi
 	pop	esi
 	popf
@@ -4463,7 +4850,9 @@ MAP_PAGE ENDP
 ems4_map_multi PROC NEAR
 	cmp	al,1	; only subfunction 0 supported
 	ja	bad_subfunc	; this is an invalid subfunction
+IF 0
 	je	NOT_IMPL
+ENDIF
 
 ; perform handle check here so that stack return address isn't blown
 ;  on invalid handle MAP_HANDLE_PAGE call which directly manipulates it
@@ -4476,6 +4865,11 @@ ems4_map_multi PROC NEAR
 	mov	cx,fs:[CX_Save]	; load EMM entry CX value
 
 	push	bx
+
+IF 1
+	cmp	al, 1
+	je	multi_loop_seg
+ENDIF
 
 multi_loop:
 	push	cx
@@ -4494,6 +4888,25 @@ multi_loop:
 multi_out:
 	pop	bx
 	ret
+
+IF 1
+multi_loop_seg:
+	push	cx
+	mov	bx,[esi]
+	mov	ax,[esi+2]
+	sub	ax,FS:[_FRAME]
+	shr	ax,10
+	add	esi,4
+	push	esi
+	call	MAP_HANDLE_PAGE
+	pop	esi
+	pop	cx
+	test	ah,ah
+	jne	multi_out	; error occurred
+	loop	multi_loop_seg
+	xor	ah,ah	; no error return
+	jmp	short multi_out
+ENDIF
 ems4_map_multi ENDP
 
 ;
@@ -7095,7 +7508,7 @@ go_driver_entry proc far
 	push fs
 	push gs
 
-	mov word ptr es:[di+3	 ],1000h	; STATUS_BAD
+	mov word ptr es:[di+3	 ],8000h	; STATUS_BAD
 
 	cmp byte ptr es:[di+2],0 		; command == 0 : do we have to initialize?
 	jne driver_done
@@ -7114,7 +7527,8 @@ go_driver_entry proc far
 	jz driver_done
 
 	mov          es:[di+0eh  ],ax   ;
-	mov word ptr es:[di+3	 ],0800h ; STATUS_OK
+	mov word ptr es:[di+3	 ],0100h ; STATUS_OK
+	mov byte ptr es:[di+0dh],1
 
 
 driver_done:
@@ -7239,6 +7653,8 @@ Neu_inst:
 	INT     21H
 ;(*-9-*)
 ;(#-9-#)
+; todo: NEC98
+IFDEF IBMPC
         MOV     AX,3513H                ; Save address of the "old" Disk-
         INT     21H                     ; or Platten-I/O-Interrupts
         MOV     WORD PTR [OLD13],BX     ; and instead of these
@@ -7253,8 +7669,10 @@ Neu_inst:
 	MOV     DX,OFFSET NEW40
 	MOV     AX,2540H
 	INT     21H
+ENDIF ; IBMPC
 ;(#-9-#)
 
+IFDEF IBMPC
         MOV     AX,3515H		    ; save INT 15h (together) with
         INT     21H                 ; Move Block and Extended Size  ...
 	MOV     WORD PTR [OLDINT15],BX
@@ -7262,6 +7680,16 @@ Neu_inst:
         MOV     DX,OFFSET NEW15             ; ... hang up instead new routine
         MOV     AX,2515H
 	INT     21H
+ENDIF ; IBMPC
+IFDEF NEC98
+	mov	ax, 351fh
+	int	21h
+	mov	word ptr [OLDINT1F], bx
+	mov	word ptr [OLDINT1F + 2], es
+	mov	dx, OFFSET NEW1F
+	mov	ax, 251fh
+	int	21h
+ENDIF ; NEC98
 ;
 ; Adjust table (this programpart takes over the "grateful" task
 ; to play DDL (Dynamic Linking Loader)

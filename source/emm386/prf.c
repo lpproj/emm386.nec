@@ -52,12 +52,12 @@ static BYTE *prfRcsId = "$Id: prf.c,v 1.13 2001/11/04 19:47:39 bartoldeman Exp $
 static BYTE *charp = 0;
 
 #ifdef PROTO
-VOID handle_char(COUNT);
+static VOID handle_char(COUNT);
 VOID put_console(COUNT);
 BYTE *ltob(LONG, BYTE *, COUNT);
 COUNT do_printf(CONST BYTE *, REG BYTE **);
 #else
-VOID handle_char();
+static VOID handle_char();
 VOID put_console();
 BYTE *ltob();
 COUNT do_printf();
@@ -89,7 +89,7 @@ put_console(COUNT c)
   if (c == '\n')
     put_console('\r');
 /*	#ifndef FORSYS	*/
-#ifdef COLAWARS	/* like, never, man */
+#if defined(IBMPC) && defined(COLAWARS)	/* like, never, man */
 	#if defined(__TURBOC__)   	
 	  _AX = 0x0e00 | c;
 	  _BX = 0x0070;

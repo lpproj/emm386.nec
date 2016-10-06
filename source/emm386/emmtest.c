@@ -46,7 +46,7 @@ main()
 */
 	char far * p;
 	unsigned long seg = *(int far *)(0x67 * 4 + 2);
-	if (seg == NULL)
+	if (seg == 0)
 	{
 		printf("no int67");
 		exit(1);

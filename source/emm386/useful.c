@@ -178,7 +178,7 @@ int far startup_exe(struct DOScommandline far *cmdline)
 
 /* driver entry to this code */
 
-int far startup_driver(char far *cmdLine)
+int far _cdecl startup_driver(char far *cmdLine)
 {
 	char far *cmdstart = 0;
 	char cmdsaved = 0;
@@ -193,13 +193,20 @@ int far startup_driver(char far *cmdLine)
 		{
     	switch(*cmdLine)
     		{
+#if !defined(NEC98)
     		case 0x00:
+#endif
     		case 0x0a:
     		case 0x0d:
     			cmdsaved = *cmdLine;
     			*cmdLine = 0;
     			goto done;
 
+#if defined(NEC98)
+			case 0x00:
+				*cmdLine = ' ';
+				/* fallthrough */
+#endif
 			case ' ':
 			case '\t':
 				if (cmdstart == 0)
@@ -236,13 +243,18 @@ done:
 */
 int StartupLogging()
 {
+#if defined(NEC98)
+	if ((*(char far *)MK_FP(0x0,0x53a) & 0x11) == 0x11)
+#elif defined(IBMPC)
 	if ((*(char far *)MK_FP(0x40,0x17) & 0x06) == 0x06)
+#else
+	if (0)
+#endif
 		return TRUE;
 	else
 		return FALSE;		
 }
 
-	
 	
 	
 	

@@ -199,7 +199,7 @@ int TheRealMain(int mode, char far *commandline)
 
 	if (FindCommand(commandline, "/TESTMEM:ON", &found) || FindCommand(commandline, "/TEST", &found))
 		{
-		extern XMSTESTmain(char);
+		extern int XMSTESTmain(char);
 		
 		XMSTESTmain(startup_verbose);
 		
@@ -209,7 +209,7 @@ int TheRealMain(int mode, char far *commandline)
 
 	if (FindCommand(commandline, "/KILL64", &found))
 		{
-		extern XMSKILL64(void);
+		extern int XMSKILL64(void);
 		
 		XMSKILL64();
 		
@@ -273,5 +273,3 @@ int TheRealMain(int mode, char far *commandline)
 	return 0;			/* driver can't fail */
 
 }
-
- 
