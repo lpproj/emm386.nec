@@ -25,7 +25,7 @@ typedef unsigned long ulong;
 #define TRUE 1
 #define FALSE 0
 
-#define MK_FP(seg,ofs)        ((void far *)(((ulong)(seg)<<16)|(ushort)(ofs)))
+#define MK_FP(seg,ofs)        ((void far *)(((ulong)(seg)<<16)|(ulong)(ushort)(ofs)))
 #define FP_SEG(fp)            ((ushort)((ulong)(void far *)(fp)>>16))
 #define FP_OFF(fp)            ((ushort)(fp))
 
