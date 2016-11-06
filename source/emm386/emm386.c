@@ -30,19 +30,13 @@
 
 */
 
-#if defined(NEC98)
-#define PROGRAM "EMM386(98)"
-#else
 #define PROGRAM "EMM386"
-#endif
 
 #include "useful.h"
 
 #define VDS
+#define SUPPORT_NOUMB
 
-#if 1
-#define PLINE { printf("line %u", (unsigned)__LINE__); _asm { mov ah,0 }; _asm { int 18h }; printf("\n"); }
-#endif
 /******************** globals in EMM386.ASM **************************************/
 #if defined(NEC98)
 # define DEFAULT_FRAME 0 /* 0xc000U */
@@ -123,13 +117,12 @@ ushort FlagFRAMEwanted = DEFAULT_FRAME;		/* should be set from commandline */
 /* ushort FlagEMSwanted   = 8*1024;		/ * wanted EMM memory         */
 unsigned long FlagEMSwanted = 0L;	/* with pool-sharing, no longer a default EMS size */
 
-
-
-#if defined(NEC98)
-char VDS_enabled = 0;					/* only if explicitly enabled */
-#else
-char VDS_enabled = 1;					/* only if explicitly enabled */
+#if defined(SUPPORT_NOUMB)
+char NoUMB = 0;
 #endif
+
+
+char VDS_enabled = 1;					/* only if explicitly enabled */
 char MemoryRequest = 0;					/* only set if EMM= memory request */
 
 
@@ -146,6 +139,20 @@ char IncludeTest = 0;
 
 void KillAbove64M(void);
 
+#if defined(NEC98)
+uchar GetDosOem(void)
+{
+	unsigned r_bx = 0;
+
+	_asm push bx
+	_asm xor bx, bx
+	_asm mov ax, 3000h
+	_asm int 21h
+	_asm mov word ptr [r_bx], bx
+	_asm pop bx
+	return r_bx >> 8;
+}
+#endif
 
 
 /* set memory type , but honour "EXCLUDE=" and "INCLUDE=" types */
@@ -201,18 +208,35 @@ static uchar CheckROM(ushort addr)
 	return type;
 }
 
+static void ScanXROMID(ushort xromid_base, int xromid_count, ushort xrom_baseseg)
+{
+	int i, n;
+
+	for(i=0; i<xromid_count; ++i)
+		{
+			uchar far *xr = MK_FP(0, xromid_base);
+			if (xr[i] & 0x80)
+				{
+				ushort mem = xrom_baseseg + (4096U / 16U) * i;
+#if 0
+				if (startup_verbose) printf("segment 0x%04X XROMID 0x%02X\n", mem, xr[i]);
+#endif
+				for(n=0; n<(4096 / 16); ++n)
+					SetMemoryType(mem++, 'E');
+				}
+		}
+}
 
 void ScanSystemMemory(void)
 {
 	uint mem;
-
 
 	for (mem = 0; mem < 0xa000U; mem++) /* system memory - reserved */
 		SetMemoryType(mem,'R');
 
 	for (mem = 0xa000; mem <= 0xa4ff; mem++) 	/* text */
 		SetMemoryType(mem,'G');
-	for (mem = 0xb000; mem <= 0xbfff; mem++) 	/* graphics */
+	for (mem = 0xa800; mem <= 0xbfff; mem++) 	/* graphics */
 		SetMemoryType(mem,'G');
 	for (mem = 0xe000; mem <= 0xe7ff; mem++) 	/* graphic */
 		SetMemoryType(mem,'G');
@@ -223,6 +247,9 @@ void ScanSystemMemory(void)
 		if (mem == 0xffff) break;
 		}
 
+	/* scan extended rom(s) */
+	/* ScanXROMID(0x4c0, 10, 0xe600); */ /* HiRes */
+	ScanXROMID(0x4d0, 16, 0xd000); /* Normal */
 	for(mem = 0xc000; mem < 0xe800; mem += 0x100)
 		{
 			uchar type = CheckROM(mem);
@@ -415,6 +442,9 @@ ushort LocatePageFrame(void)
 		if (i == 16)
 			{
 			frame = base;
+#if defined(NEC98)
+			break;
+#endif
 			}							
 		}	 
 
@@ -456,6 +486,10 @@ int isUMBMemory(ushort base)
 		else
 			return FALSE;			
 	
+#if defined(SUPPORT_NOUMB)
+	if (NoUMB)
+		return FALSE;
+#endif
 	return TRUE;
 }
 
@@ -1140,9 +1174,18 @@ int TheRealMain(int mode, char far *commandline)
 
 	printf( PROGRAM " 2.26 [" __DATE__ "]"
 	       " (c) tom ehlert 2001-2006 c't/H. Albrecht 1990\n");
+#if defined(NEC98)
+	printf("NEC PC-98 version (c) 2005, tori / 2016, sava\n");
+#endif
 
 	fmemset(SystemMemory,'U',sizeof(SystemMemory));
 
+#if defined(SUPPORT_NOUMB) && defined(NEC98)
+	/* workaround: On Microsoft MS-DOS/Win9x for NEC98, disable UMB by default */
+	/* (to enable the UMB feature, specify RAM or /UMB option manually) */
+	if (GetDosOem() == 0xff)
+		NoUMB = 1;
+#endif
 
 	/******* commandline handling **********/
 
@@ -1283,11 +1326,24 @@ int TheRealMain(int mode, char far *commandline)
 		/* NOMOVEXBDA is a no-op, but helps MS EMM386 switch compatibility */
 		}
 
+#if defined(SUPPORT_NOUMB)
+	if (FindCommand(commandline, "RAM", &found) ||
+		FindCommand(commandline, "/UMB", &found))
+		{
+		NoUMB = 0;
+		}
+	if (FindCommand(commandline, "NORAM", &found) ||
+		FindCommand(commandline, "/NOUMB", &found))
+		{
+		NoUMB = 1;
+		}
+#else
 	if (FindCommand(commandline, "RAM", &found) ||
 		FindCommand(commandline, "/?", &found))
 		{
 		/* ignore bare RAM option or /? */
 		}
+#endif
                   
 		                    /* temporary for >64M support */
 		
@@ -1362,21 +1418,32 @@ int TheRealMain(int mode, char far *commandline)
 				"please load " PROGRAM " as DEVICE=" PROGRAM ".EXE in config.sys\n\n");
 
 		printf("commandline options available for driver\n"
+#if defined(IBMPC)
 				" ALTBOOT     - hook keyboard interrupt for reboot processing\n"
+#endif
 				" EMM=#####   - reserve up to #####K for only EMS/VCPI memory\n"
 				" FRAME=E000  - select wanted pageframe for EMS\n"
+#if defined(IBMPC)
 				" I=A000-AFFF - IF YOU REALLY KNOW WHAT YOU DO (VGA graphics)\n"
 				" I=B000-B7FF - IF YOU REALLY KNOW WHAT YOU DO (Hercules)\n"
+#endif
 				" I=TEST      - test ROM locations for UMB inclusion\n"
 				" MAX=#####   - maximum available VCPI memory in K; also EMS if <32M\n"
 				" MEMCHECK    - access to full 4G address space without RAM (MMIO)\n"
+#if defined(IBMPC)
 				" NOALTBOOT   - do not hook keyboard interrupt for reboot processing (default)\n"
+#endif
 				" NOCHECK     - disallow access to address space without RAM (MMIO)\n"
 				" NODISABLEA20 - Do not allow EMM386 to disable A20\n"
 				" NOEMS       - disable EMS handling\n"
+#if defined(SUPPORT_NOUMB)
+				" NORAM       - do not allocate UMBs\n"
+#endif
 				" NOVCPI      - disable VCPI handling, requires NOEMS\n"
 				" NOVDS       - disable Virtual DMA Services\n"
+#if defined(IBMPC)
 				" SB          - SoundBlaster driver compatibility mode\n"
+#endif
 				" VDS         - enable Virtual DMA Services (default)\n"
 				" /VERBOSE    - display additional details during start\n"
 				" X=D000-D800 - to make memory mapped devices work\n"
@@ -1746,7 +1813,9 @@ void MyFunnyMain()
 				}
 		int4b_oldhandler = 	*(ulong far *)MK_FP(0,0x4b*4);
 		*(ulong far *)MK_FP(0,0x4b*4) = (ulong)&int4b_handler;
-#if defined(IBMPC)
+#if defined(NEC98)
+		*(uchar far *)MK_FP(0,0x5ad)  |= 0x20;
+#elif defined(IBMPC)
 		*(uchar far *)MK_FP(0,0x47b)  |= 0x20;
 #endif /* IBMPC */
 		}
@@ -1795,7 +1864,11 @@ dont_install_umbhandler:
 	{
 		int4b_oldhandler = 	*(ulong far *)MK_FP(0,0x4b*4);
 		*(ulong far *)MK_FP(0,0x4b*4) = (ulong)&int4b_handler;
+#if defined(NEC98)
+		*(uchar far *)MK_FP(0,0x5ad)  |= 0x20;
+#elif defined(IBMPC)
 		*(uchar far *)MK_FP(0,0x47b)  |= 0x20;
+#endif
 	}
 
 	if (FlagNOEMS)

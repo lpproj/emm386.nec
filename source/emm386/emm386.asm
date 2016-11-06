@@ -153,12 +153,14 @@ UNIMPLEMENTED_EMS_DEBUG	EQU	0
 VCPI_DEBUG	EQU	0
 
 
+IFDEF IBMPC
 PORT_A          EQU 60H              ; Data-port of the 8042
 STATUS_PORT     EQU 64H              ; Statusport of the 8042
 
 @KB_FLAG        EQU 417H             ; Status SHIFT/CTRL/ALT etcetera.
 @KB_FLAG_3      EQU 496H             ; u.a. 0E0h/0E1h
 @RESET_FLAG     EQU 472H             ; Flag for Warmboot (=1234h)
+ENDIF ; IBMPC
 
 ; GDT - Selectors in the Global Descriptor Table GDT
 NULL_SEL        EQU 00H              ; Null-Descriptor
@@ -186,11 +188,26 @@ LenPrgrd        EQU      1              ; 0 - programmed Block length
 PagePrgrd       EQU      2              ; 0 - programmed Page register
 ModePrgrd       EQU      3              ; 0 - programmed Mode-register
 
+IFDEF IBMPC
 INT13Activ      EQU      0              ; INT 13h is active
 INT40Activ      EQU      1              ; INT 40h is active
+ENDIF ; IBMPC
+IFDEF NEC98
+INT1BActiv	EQU	0		; INT 1Bh is active
+ENDIF ; NEC98
 NeedBuffer      EQU      2              ; DMA-Transfer via Buffer
 HiLoFlag1       EQU     14              ; adressing the Hi-Byte , DMA #1
 HiLoFlag2       EQU     15              ; Same for DMA controller #2
+
+IF 1
+IOWAIT_DMA	MACRO
+		jmp short $+2
+  IFDEF NEC98
+		out 5Fh, al	; NEC98 (H98 and later 9821) wait approx. 600ns
+  ENDIF
+		jmp short $+2
+		ENDM
+ENDIF
 
 REPCMD  MACRO CMD,OP                     ;; Call Command with different
                 IRP     OPERAND,<&OP>    ;; operands back
@@ -1473,11 +1490,19 @@ TargetAdr       DD      ?               ; Original adress for DMA
 BuffStart       DD      ?               ; Beginning of the DMA-Buffer
 BuffLen         DD      ?               ; Utilized part of the Buffer
 
+IFDEF IBMPC
 PageLookUp      DB      0,2,3,1,0,0,0,0,0,6,7,5,0,0,0,0
 PageXLat        DB      87H,83H,81H,82H,0,8BH,89H,8AH
 
 OLD13           DD      ?               ; Address of old INT 13h
 OLD40           DD      ?               ; Address of old INT 40h
+ENDIF ; IBMPC
+IFDEF NEC98
+PageXLat	db	27h, 21h, 23h, 25h, 0, 0, 0, 0
+PageXLat2	db	05h, 07h, 09h, 0Bh, 0, 0, 0, 0		; I/O 0Exxh (todo)
+
+OLD1B		DD	?		; Address of old INT 1Bh (disk bios)
+ENDIF ; NEC98
 
 
 
@@ -1487,6 +1512,26 @@ OLD40           DD      ?               ; Address of old INT 40h
 ;
 ; todo: NEC98
 IFDEF NEC98
+NEW1B		PROC	FAR
+	bts	cs: [Flags], INT1BActiv	; The beginning.
+	btr	cs: [Flags], NeedBuffer	; Rather disable always.
+	push	ecx
+	mov	ecx, 8				; The Statusbits partly
+@@Loop:
+	mov	cs: [ChanFlags+ECX*2-2], 1100B	; = ModePrgrd+PagePrgrd
+	loop	@@Loop
+	pop	ecx
+	pushf					; Now call the old INT
+	call	dword ptr cs: [OLD1B]		; If an error occurs,
+	pushf					; ... there is nothing !
+	jc	@@Bye
+	btr	cs: [Flags], NeedBuffer	; Is it necessary to copy
+	jnc	@@Bye				; back the buffer?
+HLT1B:
+	hlt					; Hello, 32-Bit World !
+@@Bye:
+	btr	cs: [Flags], INT1BActiv	; Bye bye (Flags are being saved,
+	popf					; the BTR CY-flag erased !)
 updated_iret:
 	push	bp
 	push	ax
@@ -1499,6 +1544,7 @@ updated_iret:
 	pop	ax
 	pop	bp
 	iret
+NEW1B		ENDP
 ENDIF ; NEC98
 IFDEF IBMPC
 NEW13 PROC FAR
@@ -1877,7 +1923,20 @@ $
 ; has to be remarked or deleted!
 
 IFDEF NEC98
+  IF 0
 		DB      10000H/8 DUP (0)		; TSS all I/O-Addresses allowed, without DMA!
+  ELSE
+		db	10101010b, 10101010b		; 0000-000F (odd addr) ch0..ch3
+		db	10000000b, 00000010b		; 0010-001F (odd addr) DMA control
+							; (0017:write mode, 0019:DMA FF)
+		db	10101010b, 00000010b		; 0027/1/3/5 page reg (A23~16)
+							; 0029 increment mode reg
+		db	((0430h - 30h) shr 3) dup (0)
+		db	00000000b, 00000010b		; 0439 DMA addr mask
+		db	((0e00h - 440h) shr 3) dup (0)
+		db	00000000b, 00000000b		; 0E05/7/9/B ext page reg (A31~24)
+		db	((10000h - 0e10h) shr 3) dup (0)
+  ENDIF
 ENDIF ; NEC98
 IFDEF IBMPC
 		DB      11111111B,00011000B		; DMA-Controller #1
@@ -2632,7 +2691,11 @@ rdmsrshare:
         JNZ     @@Do_Hlt		; the cause for the
 
 
-; todo: NEC98
+IFDEF NEC98
+	mov	ax, [esp + 18]
+	cmp	ax, offset HLT1B
+	je	TRANSFER_BUFF
+ENDIF ; NEC98
 IFDEF IBMPC
 	MOV     AX,[ESP+18]             ; General Protection Fault ?
 	CMP     AX,OFFSET HLT13		; * magical HLT in our disk / int 13 handler
@@ -2735,6 +2798,15 @@ ENDIF ; IBMPC
         TEST    BL,00000001B			; Width Word or Byte ?
 	JNZ     @@Im_Word
         IN      AL,DX				; Read the date from Port
+IFDEF NEC98
+  IF 0
+  ; todo: emulate DMA address mask state
+	cmp	dx, 0439h
+	jne	@@restore_al_and_bye
+	or	al, 00000100b			; 0439 bit2=1 mask DMA addr within 1M
+@@restore_al_and_bye:
+  ENDIF
+ENDIF
         MOV     [ESP+8+12],AL			; and return it.
 @@Bye:  REPCMD  POP,<EDI,ESI,EDX,ECX,EBX,EAX>
 	ADD     ESP,6
@@ -2758,7 +2830,58 @@ ENDIF ; IBMPC
 	JMP     @@Bye
 
 @@Do_IO:
+; layout of DMA-related ports
+;                           IBMPC  NEC98
+; ch0 address                0000  0001
+; ch0 count                  0001  0003
+; ch1 address                0002  0005
+; ch1 count                  0003  0007
+; ch2 address                0004  0009
+; ch2 count                  0005  000B
+; ch3 address                0006  000D
+; ch3 count                  0007  000F
+; status/command             0008  0011
+; write request              0009  0013
+; single mask                000A  0015
+; write mode                 000B  0017
+; DMA clear byte FF          000C  0019
+; read temporary/master clr  000D  001B
+; clear mask                 000E  001D
+; all mask                   000F  001F
+; 
+; ch0 address16M             0087  0027
+; ch1 address16M             0083  0021
+; ch2 address16M             0081  0023
+; ch3 address16M             0082  0025
+;
+; (PC-98x1 80286+)
+; auto-incremented mode      ----  0029
+; DMA address mask           ----  0439 (bit2)
+;
+; (PC-9821Mate)
+; ch0 address4G (A31~24)     ----  0E05
+; ch0 address4G              ----  0E07
+; ch0 address4G              ----  0E09
+; ch0 address4G              ----  0E0B
+;
 ; todo: NEC98
+IFDEF NEC98
+	cmp	dx, 1fh
+	jbe	LIKE_DMA
+	cmp	dx, 0439h
+	je	doio_0439
+	cmp	dx, 29h
+	je	doio_outport	; todo: doio_0029
+	; todo 0e05..0e0b
+	cmp	dx, 27h
+	ja	doio_outport
+	jmp	LIKE_PAGE
+doio_0439:
+	and	al, 11111011b		; 0439 bit2=0 unmask DMA page address (enable A31~A20)
+doio_outport:
+	out	dx, al
+	ret
+ENDIF ; NEC98
 IFDEF IBMPC
         CMP     DX,80H				; Has a Page-register
         JB      LIKE_DMA			; been adressed, or one
@@ -2810,7 +2933,6 @@ TRANSFER_BUFF ENDP			; Mode.
 ;
 ; In: DX : Port-address; AL : Value
 ;
-; todo: NEC98
 LIKE_PAGE PROC NEAR
 IFDEF IBMPC
         OUT     DX,AL				; release data
@@ -2820,11 +2942,25 @@ IFDEF IBMPC
 	BTR     ChanFlags[EDI*2],PagePrgrd	; Program page register
 	JMP     READY?
 ENDIF ; IBMPC
+IFDEF NEC98
+	; port  A23-A16  A31-A24(Mate)
+	; ch0     27h      E05h
+	; ch1     21h      E07h
+	; ch2     23h      E09h
+	; ch3     25h      E0Bh
+	out	dx, al
+	movzx	edi, dx
+	add	di, 2
+	shr	di, 1
+	and	di, 3
+	mov	PageReg[edi], al
+	btr	ChanFlags[edi * 2], PagePrgrd
+	jmp	READY?
+ENDIF ; NEC98
 LIKE_PAGE ENDP
 ;
 ; Supervise certain registers of the DMA (direct memory access) components
 ;
-; todo: NEC98
 LIKE_DMA PROC NEAR
 IFDEF IBMPC
 	OUT     DX,AL                   ; Pass on only once ...
@@ -2849,11 +2985,23 @@ IFDEF IBMPC
 	CMP     DX,1CH
 	JZ      @@Clear16
 	JMP     @@Bye                   ; If everything fails ...
+ENDIF ; IBMPC
+IFDEF NEC98
+	out	dx, al
+	shr	dx, 1
+	cmp	dx, (0Fh shr 1)
+	jbe	@@BlockSet
+	cmp	dx, (17h shr 1)
+	je	@@Mode8
+	cmp	dx, (19h shr 1)
+	je	@@Clear8
+ENDIF ; NEC98
+	JMP     @@Bye                   ; (waterfall)
 ;
 ; Access to Startadress and/or Blocklength of a DMA-Channel
 ;
 @@BlockSet:
-        MOVZX   EDI,DX			; Compute the DmaChannel-number from the
+        MOVZX   EDI,DX			; Compute the DMA Ch-number from the I/O addr
 	AND     DI,0110B                ; I/O-Adress (likewise already transformed)
 	SHR     DI,1
         MOV     BX,HiLoFlag1            ; ... currently Controller #1
@@ -2888,11 +3036,13 @@ IFDEF IBMPC
 READY?: TEST    ChanFlags[EDI*2],1111B
 						; = BasePrgrd+LenPrgrd+PagePrgrd+ModePrgrd
         JNZ     @@Bye			        ; All Registers initialised ?
+;IFDEF IBMPC
 	TEST    [Flags],11B	                ; INT13Active+INT40Active.
 						; Is currently a Disk-
         JZ      @@Bye				; I/O-INT currently active ?
 						; If not, (keep an eye wide shut and continue..)
 						; Eyes too and through...
+;ENDIF ; IBMPC
         CALL    CHK_CHANNEL			; Then check value
 @@Bye:  RET
 ;
@@ -2923,7 +3073,6 @@ READY?: TEST    ChanFlags[EDI*2],1111B
 @@Clear16:
         BTR     [Flags],HiLoFlag2		; Number 2's turn..
 	JMP     @@Bye
-ENDIF ; IBMPC
 LIKE_DMA ENDP
 ;
 ; Check a memory-area, whether it lies in continuous physical memory
@@ -2989,6 +3138,7 @@ CONTINUOUS? ENDP
 CHK_CHANNEL PROC NEAR
         MOVZX   ECX,BlockLen[EDI*2]     ; Calculate length of the blocks
         INC     ECX                     ; which are transferred
+IFDEF IBMPC
         CMP     EDI,4                   ; In case we're dealing with a
         JB      @@Only8                 ; 16bit DMA-channel , words are transferred.
         ADD     ECX,ECX
@@ -2998,6 +3148,7 @@ CHK_CHANNEL PROC NEAR
 	SHL     ESI,1
 	JMP     @@Chk
 @@Only8:
+ENDIF ; IBMPC
         MOVZX   ESI,PageReg[EDI]        ; For 8-Bit-DMA-Channels the
         SHL     ESI,16                  ; Adress-calculation is a bit
         MOV     SI,BaseAdr[EDI*2]       ; more easy...
@@ -3014,6 +3165,15 @@ CHK_CHANNEL PROC NEAR
 	MOV     ESI,[BuffStart]			; if not, go over Buffer (and draw 4000 clocks...)
 	BTS     [Flags],NeedBuffer
 @@Set:
+IFDEF NEC98
+	mov	dx, di			; calc I/O-addr from the ch-number
+	shl	dx, 2
+	inc	dx
+	BTR     [Flags],HiLoFlag1       ; Clear DMA #1, HiLo-FlipFlop-Flag
+	out	[19h],AL                ; Hi/Lo-FlipFlop ...
+	IOWAIT_DMA			; ... and the remaining.
+ENDIF ; NEC98
+IFDEF IBMPC
 	MOV     DX,DI                   ; Calculate I/O-address from the
         ADD     DX,DX                   ; channelnumber
         CMP     EDI,4                   ; 8-bit or 16-bit channel ?
@@ -3023,33 +3183,45 @@ CHK_CHANNEL PROC NEAR
         ADD     DX,DX                   ; The 2nd DMA-Controller
         ADD     DX,0C0H                 ; is located at 0C0h
 	OUT     [0D8H],AL               ; Clear Hi/Lo-FlipFlop
-	JMP     $+2                     ; ... leave some time.
+	IOWAIT_DMA			; ... leave some time.
 	SHR     ESI,1                   ; The Baseadress is now
 	MOV     AX,SI                   ; newly written in the Controller
 	OUT     DX,AL                   ; Lo before Hi-Byte
 	MOV     AL,AH                   ; in the usual Intel way.
-	JMP     $+2
+	IOWAIT_DMA
 	OUT     DX,AL
 	MOVZX   DX,PageXLat[DI]         ; Set I/O-Adress of the page-
 	SHR     ESI,15                  ; registers.
 	MOV     AX,SI                   ; Ship still the remaining 8 Bit of
-	JMP     $+2                     ; the 24-Bit-Adress in the page register.
+	                                ; the 24-Bit-Adress in the page register.
+	IOWAIT_DMA
 	OUT     DX,AL
 	JMP     @@Cont
 @@Set8:
 	BTR     [Flags],HiLoFlag1       ; Clear DMA #1, HiLo-FlipFlop-Flag
 	OUT     [0CH],AL                ; Hi/Lo-FlipFlop ...
-	JMP     $+2                     ; ... and the remaining.
+	IOWAIT_DMA			; ... and the remaining.
+ENDIF ; IBMPC
         MOV     AX,SI                   ; Program the base-address anew
         OUT     DX,AL                   ;
 	MOV     AL,AH
-	JMP     $+2
+	IOWAIT_DMA
 	OUT     DX,AL
         MOVZX   DX,PageXLat[DI]         ; Like above, but now that the
         SHR     ESI,16                  ; Adress-calculation appears to be a bit different
         MOV     AX,SI                   ; (and easier) with 8-Bit-DMA-
-        JMP     $+2                     ; Channels.
+                                        ; Channels.
+	IOWAIT_DMA
 	OUT     DX,AL
+IFDEF NEC98
+  IF 1
+	mov	dl, PageXLat2[di]
+	mov	dh, 0eh
+	xchg	al, ah
+	out	dx, al
+	IOWAIT_DMA
+  ENDIF
+ENDIF ; NEC98
 @@Cont:
 ; Now check, if the data (because of "Save") still needs to be copied first
 ; in the buffer
@@ -7508,7 +7680,7 @@ go_driver_entry proc far
 	push fs
 	push gs
 
-	mov word ptr es:[di+3	 ],8000h	; STATUS_BAD
+	mov word ptr es:[di+3	 ],8100h	; STATUS_BAD
 
 	cmp byte ptr es:[di+2],0 		; command == 0 : do we have to initialize?
 	jne driver_done
@@ -7603,10 +7775,12 @@ go_driver PROC FAR
 	jnz fail_driver
 
 
+IFDEF IBMPC
         XOR     AX,AX           ; next, restore (set back?)
         MOV     DS,AX           ; Reset-Flag
         MOV     AX,00AAh        ; usual OK-message
 	MOV     WORD PTR DS:[@RESET_FLAG],AX
+ENDIF ; IBMPC
 	MOV     AX,SEG MONDATA      ; Set data segment
 	MOV     DS,AX
 
@@ -7653,7 +7827,9 @@ Neu_inst:
 	INT     21H
 ;(*-9-*)
 ;(#-9-#)
-; todo: NEC98
+IFDEF NEC98
+	call	nec98_hookdisk
+ENDIF ; NEC98
 IFDEF IBMPC
         MOV     AX,3513H                ; Save address of the "old" Disk-
         INT     21H                     ; or Platten-I/O-Interrupts
@@ -7682,6 +7858,11 @@ IFDEF IBMPC
 	INT     21H
 ENDIF ; IBMPC
 IFDEF NEC98
+	mov	dx, 439h		; disable DMA address mask (bit2=0)
+	in	al, dx
+	IOWAIT_DMA
+	and	al, 11111011b
+	out	dx, al
 	mov	ax, 351fh
 	int	21h
 	mov	word ptr [OLDINT1F], bx
@@ -7809,6 +7990,75 @@ fail_driver:
 
 go_driver ENDP
 
+
+IFDEF NEC98
+ENTRY1B_OFF equ 00a8h
+;ENTRY1B_OFF equ 1a82h
+
+nec98_hookdisk	PROC NEAR
+  IF 0
+	mov	ax, 3000h
+	xor	bx, bx
+	int	21h
+	cmp	bh, 0ffh		; check OEM: Microsoft?
+	jne	@@hook1b
+	;
+	; kludge for MS-DOS IO.SYS (NEC, EPSON and Microsoft Win9x)
+	; (hook internal OLD1B within IO.SYS + MSDOS.SYS by finding
+	; original vector FD80:XXXX)
+	;
+	mov	ax, 60h
+	mov	es, ax
+	xor	bx, bx
+@@lp:
+	cmp	word ptr es:[bx], ENTRY1B_OFF
+	jne	@@next
+	cmp	word ptr es:[bx+2], 0fd80h
+	je	@@found
+@@next:
+	inc	bx
+	cmp	bx, 0c000h - 4
+	jbe	@@lp
+	xor	dx, dx
+	mov	ax,3306h
+	int	21h
+	test	dh, 00010000b
+	jz	@@hook1b
+	; if MSDOS kernel is in HMA, check even HMA
+	mov	ax, 0ffffh
+	mov	es, ax
+	xor	bx, bx
+@@lp_hma:
+	cmp	word ptr es:[bx], ENTRY1B_OFF
+	jne	@@next_hma
+	cmp	word ptr es:[bx+2], 0fd80h
+	je	@@found
+@@next_hma:
+	inc	bx
+	cmp	bx, 08000h - 4
+	jbe	@@lp_hma
+  ENDIF
+@@hook1b:
+	mov	ax, 351bh
+	int	21h
+	mov	word ptr [OLD1B], bx
+	mov	word ptr [OLD1B + 2], es
+	mov	dx, offset NEW1B
+	mov	ax, 251bh
+	int	21h
+	ret
+  IF 0
+@@found:
+	cli
+	mov	word ptr [OLD1B], ENTRY1B_OFF
+	mov	word ptr [OLD1B + 2], 0fd80h
+	mov	word ptr es:[bx], offset NEW1B
+	mov	word ptr es:[bx + 2], ds
+	sti
+	ret
+  ENDIF
+nec98_hookdisk	ENDP
+ENDIF
 
 ;
 ; check, if this program runs after all on a 386-Computer (o.ae.)
