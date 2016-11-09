@@ -1181,9 +1181,11 @@ int TheRealMain(int mode, char far *commandline)
 	fmemset(SystemMemory,'U',sizeof(SystemMemory));
 
 #if defined(SUPPORT_NOUMB) && defined(NEC98)
+# if 0
 	/* workaround: On Microsoft MS-DOS/Win9x for NEC98, disable UMB by default */
 	/* (to enable the UMB feature, specify RAM or /UMB option manually) */
 	if (GetDosOem() == 0xff)
+# endif
 		NoUMB = 1;
 #endif
 
