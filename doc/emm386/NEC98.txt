@@ -1,0 +1,97 @@
+EMM386(98) v2.26
+
+
+内容
+----
+
+FreeDOS ディストリビューションに含まれる EMM386 を PC-98 用に
+移植したものです。tori 氏の行った v1.15 の移植 (emm386_20050223.zip) を
+v2.26 に適用し、若干の修正を加えたものです。
+
+
+動作環境
+--------
+
+- NEC PC-9801/9821 およびその互換機（ハイレゾモード未対応）
+- 386 以上の CPU
+- 1.6M バイト以上の RAM
+- FreeDOS(98) （MS-DOS でも一応動作するが、現状で UMB 関係に不備がある）
+
+
+用法
+----
+
+CONFIG.SYS を適当なエディタで編集し、HIMEM.EXE（もしくは HIMEMX.EXE）と
+EMM386.EXE をデバイスとドライバとして登録します。
+同梱の HIMEM.EXE は 16M バイト以上のメモリを認識できない場合があるため、
+別パッケージの HIMEM.EXE の利用をおすすめします。
+
+    DEVICE=HIMEM.EXE
+    DEVICE=EMM386.EXE [FRAME=wwww] [NOEMS] 
+                      [RAM] [NORAM] [I=xxxx-yyyy] [X=xxxx-yyyy]
+                      [/VERBOSE]
+
+EMM386 オプション（抄）:
+
+    NOEMS       EMS を使用しない場合に指定
+    FRAME=wwww  EMS フレーム用のセグメントアドレスを指定
+                （無指定時は 64K バイトの連続領域を自動検出）
+    NORAM       UMB を使用したくない場合に設定
+                （PC-98 の場合、この状態がデフォルトです。UMB を使う場合は
+                RAM オプションを設定する必要があります）
+    RAM         UMB を使用する場合に設定
+    I=xxxx-yyyy UMB として利用する領域のセグメントアドレスを指定
+    X=xxxx-yyyy UMB に含めない領域のセグメントアドレスを指定
+
+    /VERBOSE    各種情報の詳細表示
+
+
+現時点での制限（PC-98 版）
+--------------------------
+
+- 286 以下の CPU を持つ機種にインストールしようとすると、DOS そのものが
+  ハングアップする可能性があります。必ず CONFIG.SYS の該当行をコメント
+  アウトする（先頭に REM をつける）か、完全に削除してください。
+
+- 現状では UMB 領域への DMA アクセス（主にディスクの読み書き）の問題が
+  完全に解決していないため、デフォルトで UMB が無効となっています。
+  （FreeDOS(98) の場合、MS-DOS と違って UMB への直接的なディスクアクセスを
+  行わないため、UMB を使ってもそれほど問題が出ないかもしれません。UMB を
+  使ってみたい場合は EMM386 に RAM オプションを指定してください）
+
+- EMS メモリを利用するには、上位メモリ（UMB などに使える領域）に
+  64K バイトの連続した未使用メモリ空間が必要です。IDE 搭載機では C000
+  (C0000h～CFFFFh）がほぼ使えるはずですが、この領域を使用している
+  拡張ボードを使用している場合、EMS メモリが利用できないこともあります。
+
+- 16M システム空間を使用する設定になっている場合、付属の himem.exe は
+  16M バイト以上のメモリを認識できません。16M バイト以上のメモリを搭載した
+  機種では himemx.exe の利用をおすすめします。
+
+
+How to Build
+------------
+
+少なくとも以下のものが必要です。
+
+- OpenWatcom
+- Borland Turbo Assembler (tasm)
+
+tasm が DOS もしくは Windows 上でしか動作しませんので、事実上 Windows
+もしくは DOS 環境のみでビルド可能です。
+OpenWatcom 用の Makefile (Makefile.wc) を OpenWatcom の Make (wmake) で
+実行すると、IBM PC 用と NEC PC-98 用のバイナリが両方作成されます。
+
+    wmake -f Makefile.wc
+
+x64 Windows 上でビルドする場合、DOS 用の tasm.exe を直接実行できないため
+Win32 版の tasm (tasm32) を使うか、何らかのエミュレータを使う必要があります。
+
+
+Reference
+---------
+
+FreeDOS EMM386: http://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/dos/emm386/
+EMM386(98) v1.15 (2005-02-23): http://retropc.net/tori/freedos/
+source of my port: https://github.com/lpproj/emm386.nec
+
